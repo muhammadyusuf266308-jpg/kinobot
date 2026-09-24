@@ -566,7 +566,9 @@ async def cmd_sync(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     try:
         from telethon import TelegramClient
         saved = skipped = errors = total = 0
-        async with TelegramClient("sync_session", API_ID, API_HASH) as client:
+        client = TelegramClient("sync_session", API_ID, API_HASH)
+        await client.start(bot_token=BOT_TOKEN)
+        async with client:
             async for message in client.iter_messages(CHANNEL_ID, reverse=True):
                 total += 1
                 text = message.text or message.message or ""
