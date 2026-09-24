@@ -27,19 +27,37 @@ def init_db():
         logger.error(f"❌ Supabase ulanish xatosi: {e}")
 
 
+def normalize_title(text: str) -> str:
+    """Nomlarni solishtirish uchun tozalash va standartlashtirish"""
+    if not text:
+        return ""
+    # Emojilar va maxsus belgilarni tozalash
+    t = re.sub(r"[\U00010000-\U0010ffff\u2600-\u26FF\u2700-\u27BF\U0001F300-\U0001F9FF\U0001FA00-\U0001FA9F\ufe0e\ufe0f]+", "", text)
+    # Apostroflarni birlashtirish (o'rgimchak, o‘rgimchak -> o'rgimchak)
+    t = re.sub(r"[`ʻʼ’']", "'", t)
+    # Tire, defis va tinish belgilarini bo'shliqqa aylantirish
+    t = re.sub(r"[\-_–—:.,!?/()\[\]«»\"*~]+", " ", t)
+    return re.sub(r"\s+", " ", t).strip().lower()
+
+
 def _is_whole_word_match(query: str, title: str) -> bool:
     """
-    Qidirilayotgan so'z kino nomida mustaqil so'z sifatida qatnashganligini tekshiradi.
+    Qidirilayotgan so'z yoki ibora kino nomida mustaqil so'z sifatida qatnashganligini tekshiradi.
     Masalan:
       query="tor", title="Tor" -> True
       query="tor", title="Tor: Sevgi va Momaqaldiroq" -> True
-      query="tor", title="Restorant haqidagi kinoga" -> False! (chunki bu "Restorant" ichidagi harflar)
+      query="tor", title="Restorant haqidagi kinoga" -> False!
     """
-    if not title:
+    if not title or not query:
         return False
-    # So'z chegaralari (\b) bo'yicha qidiruv
-    pattern = rf"(?i)(?:^|[\s\-_:,\.\(\)\[\]«»'\"/]){re.escape(query)}(?:$|[\s\-_:,\.\(\)\[\]«»'\"/])"
-    return bool(re.search(pattern, title))
+    norm_q = normalize_title(query)
+    norm_t = normalize_title(title)
+    if not norm_q or not norm_t:
+        return False
+    if norm_q == norm_t:
+        return True
+    pattern = rf"(?:^|\s){re.escape(norm_q)}(?:$|\s)"
+    return bool(re.search(pattern, norm_t))
 
 
 def search_movie(query: str) -> list[dict]:
@@ -67,17 +85,18 @@ def search_movie(query: str) -> list[dict]:
             pass
 
     # 2. Supabase dan nomida shu harflar qatnashgan kinolarni tortib olamiz
+    norm_q = normalize_title(query_clean)
     q = f"%{query_clean}%"
     raw_candidates = []
     try:
-        res = client.table("movies").select("*").ilike("title", q).order("year", desc=True).limit(20).execute()
+        res = client.table("movies").select("*").or_(f"title.ilike.{q},title_ru.ilike.{q},title_en.ilike.{q}").order("year", desc=True).limit(25).execute()
         raw_candidates = res.data or []
     except Exception as e:
         logger.error(f"Qidiruv xatosi (title): {e}")
 
-    # Agar qidiruv 1-2 ta so'zdan iborat bo'lsa, lekin topilmagan bo'lsa:
-    if not raw_candidates:
-        words = [w for w in re.split(r"[\s\-_:,.]+", query_clean) if len(w) >= 3]
+    # Agar qidiruv bir nechta so'zdan iborat bo'lsa va hali topilmagan bo'lsa:
+    words = [w for w in norm_q.split() if len(w) >= 3]
+    if len(raw_candidates) < 5 and words:
         for w in words[:2]:
             try:
                 res_w = client.table("movies").select("*").ilike("title", f"%{w}%").limit(15).execute()
@@ -90,25 +109,23 @@ def search_movie(query: str) -> list[dict]:
     if not raw_candidates:
         return []
 
-    # 3. FILTRLASH VA SARALASH (ENG MUHIM QISM):
-    # Butun so'z mosligiga qarab darajalarga ajratamiz
+    # 3. FILTRLASH VA SARALASH:
     exact_matches = []      # Nom qidiruvga aynan teng bo'lsa (masalan "Tor" == "Tor")
     whole_word_matches = [] # Butun so'z sifatida qatnashgan bo'lsa ("Tor: Sevgi va...")
-    partial_matches = []    # Shunchaki ichida harflar qatnashgan bo'lsa ("Restorant...")
+    partial_matches = []    # Faqat 5+ harfli so'zlarda qisman moslik ("Titanik" -> "Titanik 2")
 
-    q_lower = query_clean.lower()
     for m in raw_candidates:
         title = m.get("title", "")
-        t_lower = title.lower()
+        norm_t = normalize_title(title)
 
-        if t_lower == q_lower:
+        if norm_t == norm_q:
             exact_matches.append(m)
-        elif _is_whole_word_match(q_lower, title):
+        elif _is_whole_word_match(query_clean, title):
             whole_word_matches.append(m)
-        else:
+        elif len(norm_q) >= 5 and norm_q in norm_t:
             partial_matches.append(m)
 
-    # Agar aynan yoki butun so'z mosligi topilsa, noto'g'ri qisman so'zlarni (Restorantni) butunlay tashlab yuboramiz!
+    # Agar aynan yoki butun so'z mosligi topilsa, noto'g'ri qisman so'zlarni butunlay tashlab yuboramiz
     if exact_matches or whole_word_matches:
         results = exact_matches + whole_word_matches
     else:

@@ -349,6 +349,7 @@ async def on_user_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     # Guruhda bo'lsa, qachon qidirishi kerakligini tekshiramiz:
+    is_explicit = True
     if not is_private:
         # 1. Bot yuborgan xabarga Reply (javob) qilib yozilgan bo'lsa
         is_reply_to_bot = False
@@ -356,21 +357,30 @@ async def on_user_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             is_reply_to_bot = (msg.reply_to_message.from_user.id == ctx.bot.id or msg.reply_to_message.from_user.is_bot)
         
         # 2. Xabar kalit so'z bilan boshlangan bo'lsa (kino, film, /kino, !kino, kod...)
-        # Yoki shunchaki raqam bo'lsa (masalan "209" deb yozsa ham qidirsin)
         starts_with_keyword = any(
             text.lower().startswith(word.lower()) or 
             text.lower().startswith(f"/{word.lower()}") or 
             text.lower().startswith(f"!{word.lower()}")
-            for word in (TRIGGER_WORDS + ["kod", "kodi"])
+            for word in (TRIGGER_WORDS + ["kod", "kodi", "ai", "qidir"])
         )
-        is_pure_code = text.isdigit()
+        is_pure_code = text.strip().isdigit()
 
-        # Agar na botga reply bo'lsa, na kalit so'z bo'lsa — oddiy suhbat deb e'tiborsiz qoldiramiz!
-        if not (is_reply_to_bot or starts_with_keyword or is_pure_code):
+        # 3. Bot zikr qilingan bo'lsa
+        is_bot_mentioned = bool(ctx.bot.username and f"@{ctx.bot.username.lower()}" in text.lower())
+
+        is_explicit = bool(is_reply_to_bot or starts_with_keyword or is_pure_code or is_bot_mentioned)
+
+        # Agar ochiq qidiruv bo'lmasa, salom-alik yoki juda qisqa so'zlarni e'tiborsiz qoldiramiz
+        clean_t = text.lower().strip()
+        COMMON_GREETINGS = {
+            "salom", "assalomu alaykum", "assalom", "vaalaykum", "rahmat", "raxmat", 
+            "ok", "ha", "yo'q", "yoq", "qalesiz", "qalaysiz", "yaxshimisiz", "tushunarli", "spasibo"
+        }
+        if not is_explicit and (clean_t in COMMON_GREETINGS or len(clean_t) < 3):
             return
 
     # ── Kino qidirish ──
-    await _handle_search(ctx, msg, text, user, chat)
+    await _handle_search(ctx, msg, text, user, chat, is_explicit=is_explicit)
 
 
 async def _handle_instagram(ctx, msg, text, user, chat):
@@ -394,7 +404,7 @@ async def _handle_instagram(ctx, msg, text, user, chat):
         logger.error(f"Instagram → user: {e}")
 
 
-async def _handle_search(ctx, msg, text, user, chat):
+async def _handle_search(ctx, msg, text, user, chat, is_explicit: bool = True):
     query   = clean_query(text)
     results = search_movie(query)
 
@@ -402,11 +412,26 @@ async def _handle_search(ctx, msg, text, user, chat):
     ai_suggested_title = None
     if not results and len(query) >= 4:
         try:
-            ai_title = ask_ai_for_movie_title(query)
-            if ai_title and ai_title.lower() != query.lower():
-                results = search_movie(ai_title)
+            ai_data = ask_ai_for_movie_title(query)
+            if ai_data and isinstance(ai_data, dict):
+                # 1. Avval o'zbekcha nomi bo'yicha qidiramiz
+                title_uz = ai_data.get("title_uz")
+                if title_uz:
+                    results = search_movie(title_uz)
+                    if results:
+                        ai_suggested_title = title_uz
+
+                # 2. Agar topilmasa inglizcha nomi bo'yicha qidiramiz
+                if not results:
+                    title_en = ai_data.get("title_en")
+                    if title_en:
+                        results = search_movie(title_en)
+                        if results:
+                            ai_suggested_title = title_en
+            elif isinstance(ai_data, str) and ai_data:
+                results = search_movie(ai_data)
                 if results:
-                    ai_suggested_title = ai_title
+                    ai_suggested_title = ai_data
         except Exception as e:
             logger.warning(f"AI qidiruv xatosi: {e}")
 
@@ -443,7 +468,7 @@ async def _handle_search(ctx, msg, text, user, chat):
         except TelegramError as e:
             logger.error(f"Movie card: {e}")
 
-    else:
+    elif is_explicit:
         log_search(user.id, user.username, user.full_name, query, False)
 
         try:

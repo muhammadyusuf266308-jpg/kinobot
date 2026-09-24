@@ -15,8 +15,8 @@ _KOD_PATTERNS = [
     re.compile(r"(?i)\bkod\s*[:\-]?\s*(\d+)"),
 ]
 
-# Ro'yxat formati qatori: masalan "127 — 📺Tor" yoki "147 - Momaqaldiroqlar"
-_LIST_LINE_RE = re.compile(r"^(\d{1,5})\s*[\-—–:]\s*(.+)$")
+# Ro'yxat formati qatori: masalan "127 — 📺Tor" yoki "147 - Momaqaldiroqlar" yoki "№124. Qasoskorlar"
+_LIST_LINE_RE = re.compile(r"^(?:№\s*)?(\d{1,5})\s*[\.\-—–:]\s*(.+)$")
 
 # Reklama va oddiy gaplarni aniqlovchi filtr (faqat aniq no-kino postlar uchun)
 _SPAM_KEYWORDS = [
@@ -27,18 +27,22 @@ _SPAM_KEYWORDS = [
 _FIELD_RE = re.compile(
     r"^(?:[\U00010000-\U0010ffff\u2600-\u26FF\u2700-\u27BF"
     r"\U0001F300-\U0001F9FF\U0001FA00-\U0001FA9F"
-    r"\U00002702-\U000027B0\U0001F1E0-\U0001F1FF]*\s*)?"
+    r"\U00002702-\U000027B0\U0001F1E0-\U0001F1FF\ufe0e\ufe0f]*\s*)?"
     r"([^:\n]{1,30}):\s*(.+)$"
 )
 
 
 def _clean_emojis(text: str) -> str:
-    return re.sub(
+    # 1. Emojilar va maxsus belgilarni tozalash
+    t = re.sub(
         r"[\U00010000-\U0010ffff\u2600-\u26FF\u2700-\u27BF"
         r"\U0001F300-\U0001F9FF\U0001FA00-\U0001FA9F"
-        r"\U00002702-\U000027B0\U0001F1E0-\U0001F1FF]+",
+        r"\U00002702-\U000027B0\U0001F1E0-\U0001F1FF\ufe0e\ufe0f]+",
         "", text
-    ).strip()
+    )
+    # 2. Markdown belgilarini tozalash (*, _, `, ~)
+    t = re.sub(r"[*_`~]", "", t)
+    return t.strip()
 
 
 def _normalize_key(raw: str) -> str:
@@ -64,8 +68,8 @@ def parse_post_multiple(text: str, message_id: int = None) -> list[dict]:
         m = _LIST_LINE_RE.match(clean_l)
         if m:
             code_num = m.group(1).strip()
-            title = m.group(2).strip(". :–-")
-            if title and len(title) > 1 and not any(skip in title.lower() for skip in ["botimiz", "kanalimiz", "http"]):
+            title = _clean_emojis(m.group(2)).strip(". :–- ")
+            if title and len(title) > 1 and not any(skip in title.lower() for skip in ["botimiz", "kanalimiz", "http", "t.me"]):
                 list_items.append({
                     "title": title,
                     "title_ru": None,

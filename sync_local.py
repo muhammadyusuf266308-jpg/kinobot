@@ -3,6 +3,12 @@
 #  (Kompyuterda 1 marta ishga tushiriladi)
 # ============================================================
 import asyncio
+import sys
+import io
+
+if sys.stdout.encoding != 'utf-8':
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+
 from config import API_ID, API_HASH, CHANNEL_ID
 from database import get_client, add_movie
 from channel_parser import parse_post_multiple
@@ -37,11 +43,6 @@ async def main():
                 continue
 
             movies_list = parse_post_multiple(text, message_id=message.id)
-            if not movies_list:
-                # Agar oddiy parser topolmasa, AI dan so'raymiz
-                if "kod" in text.lower() or "kodi" in text.lower():
-                    movies_list = parse_post_with_ai(text, message_id=message.id)
-
             if not movies_list:
                 skipped += 1
                 continue

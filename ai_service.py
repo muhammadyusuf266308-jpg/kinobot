@@ -7,16 +7,20 @@ import re
 import json
 import logging
 import requests
+from dotenv import load_dotenv
+
+load_dotenv()
 
 logger = logging.getLogger(__name__)
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
-# Ishonchli Gemini modellari ketma-ketligi (biri band bo'lsa, ikkinchisiga o'tadi)
+# Ishonchli Gemini modellari ketma-ketligi (birinchisi band bo'lsa, keyingisiga o'tadi)
 MODELS = [
-    "gemini-3-flash-preview",
+    "gemini-3.6-flash",
     "gemma-4-26b-a4b-it",
-    "gemini-flash-latest"
+    "gemini-3.5-flash",
+    "gemini-3.1-flash-lite",
 ]
 
 
@@ -34,13 +38,16 @@ def _call_gemini(prompt: str, json_mode: bool = False) -> str | None:
     for model in MODELS:
         try:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
-            res = requests.post(url, json=data, timeout=8)
+            res = requests.post(url, json=data, timeout=15)
             if res.status_code == 200:
                 result = res.json()
-                text = result["candidates"][0]["content"]["parts"][0]["text"]
-                return text.strip()
-            elif res.status_code == 503:
-                # Model vaqtincha band, keyingisiga o'tamiz
+                candidates = result.get("candidates", [])
+                if candidates:
+                    parts = candidates[0].get("content", {}).get("parts", [])
+                    if parts:
+                        return parts[0].get("text", "").strip()
+            else:
+                logger.warning(f"Gemini {model} javob bermadi (status {res.status_code})")
                 continue
         except Exception as e:
             logger.warning(f"Gemini {model} xatosi: {e}")
@@ -49,28 +56,44 @@ def _call_gemini(prompt: str, json_mode: bool = False) -> str | None:
     return None
 
 
-def ask_ai_for_movie_title(user_query: str) -> str | None:
+def ask_ai_for_movie_title(user_query: str) -> dict | None:
     """
-    Foydalanuvchi kino syujetini yoki xato nom yozganda,
-    AI dan kino nomini aniqlab berishni so'raydi.
-    Masalan:
-      "bitta kema aysbergga urilib cho'kib ketadi" -> "Titanik"
-      "yigitni o'rgimchak chaqib oladi" -> "O'rgimchak odam"
+    Foydalanuvchi kino syujetini yoki tavsifini yozganda,
+    AI dan kinoning o'zbekcha va inglizcha nomlarini aniqlab berishni so'raydi.
     """
-    prompt = f"""Sen kino ekspertisan. Foydalanuvchi kino haqida yozgan tavsif yoki xato nomdan kino nomini topishing kerak.
-Faqat va faqat kinoning asl O'zbekcha yoki xalqaro nomini 1-3 so'z bilan yoz. Hech qanday ortiqcha gap, salom yoki izoh yozma!
+    prompt = f"""Sen kino ekspertisan. Foydalanuvchi kino haqida yozgan tavsif, syujet yoki xato nomdan qidirilayotgan kinoni aniqla.
+Javobni quyidagi JSON formatda ber:
+{{
+  "title_uz": "O'zbekcha nomi (masalan: O'rgimchak odam, Qasoskorlar, Tor, Titanik)",
+  "title_en": "Inglizcha nomi (masalan: Spider-Man, The Avengers, Thor, Titanic)"
+}}
 
 Foydalanuvchi so'rovi:
 "{user_query}"
+"""
 
-Kino nomi:"""
-
-    ans = _call_gemini(prompt)
+    ans = _call_gemini(prompt, json_mode=True)
     if ans:
-        # Ortiqcha qo'shtirnoq va belgilarni tozalash
-        ans = ans.strip(' "\'«»\n.').split('\n')[0]
-        logger.info(f"🤖 AI topgan kino: '{user_query}' -> '{ans}'")
-        return ans
+        try:
+            clean = re.sub(r"^```(?:json)?\s*", "", ans.strip(), flags=re.IGNORECASE)
+            clean = re.sub(r"\s*```$", "", clean).strip()
+            data = json.loads(clean)
+            if isinstance(data, dict):
+                logger.info(f"🤖 AI aniqladi: '{user_query}' -> {data}")
+                return data
+        except Exception:
+            pass
+
+    # Agar JSON bo'lmasa oddiy matn sifatida so'raymiz
+    text_prompt = f"Kino syujetidan o'zbekcha kino nomini 1-3 so'z bilan yoz:\n\"{user_query}\"\nKino nomi:"
+    raw_ans = _call_gemini(text_prompt)
+    if raw_ans:
+        lines = [line.strip(' \t\r"*-\'') for line in raw_ans.splitlines() if line.strip(' \t\r"*-')]
+        clean_ans = lines[-1] if lines else raw_ans
+        clean_ans = clean_ans.strip(' "\'«»\n.').replace("Kino nomi:", "").strip()
+        logger.info(f"🤖 AI aniqladi (raw): '{user_query}' -> '{clean_ans}'")
+        return {"title_uz": clean_ans, "title_en": clean_ans}
+
     return None
 
 
