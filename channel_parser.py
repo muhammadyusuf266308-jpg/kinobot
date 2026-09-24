@@ -18,13 +18,10 @@ _KOD_PATTERNS = [
 # Ro'yxat formati qatori: masalan "127 — 📺Tor" yoki "147 - Momaqaldiroqlar"
 _LIST_LINE_RE = re.compile(r"^(\d{1,5})\s*[\-—–:]\s*(.+)$")
 
-# Reklama va oddiy gaplarni aniqlovchi filtr (bular KINO EMAS)
-_IGNORE_KEYWORDS = [
-    "kanal sotiladi", "sotiladi", "open budget", "ovoz bering",
-    "obunachilar", "aktiv bo", "uzur so", "reklama", "narxi",
-    "tavsiya qilaman", "obuna bo", "admin ga", "murojaat",
-    "akkaunt", "pul ishlash", "dangal oladiganlar", "arzonga bervoraman",
-    "izohga yozishingiz", "yangi kino yuklandi", "qaysi qismini tahrirlamoqchisiz"
+# Reklama va oddiy gaplarni aniqlovchi filtr (faqat aniq no-kino postlar uchun)
+_SPAM_KEYWORDS = [
+    "kanal sotiladi", "open budget", "ovoz bering", "ovoz olamiz",
+    "aktiv bo", "uzur so", "arzonga bervoraman", "dangal oladiganlar"
 ]
 
 _FIELD_RE = re.compile(
@@ -58,11 +55,9 @@ def parse_post_multiple(text: str, message_id: int = None) -> list[dict]:
     if not text or len(text.strip()) < 5:
         return []
 
-    lower_text = text.lower()
     lines = [l.strip() for l in text.strip().splitlines() if l.strip()]
 
     # 1. Post ko'p kinoli ro'yxat ekanligini tekshiramiz
-    # Bunday postlarda odatda "kod", "kodni", yoki raqamlar ro'yxati bo'ladi
     list_items = []
     for line in lines:
         clean_l = _clean_emojis(line)
@@ -104,12 +99,12 @@ def parse_post(text: str, message_id: int = None) -> dict | None:
     if "kod" not in lower_text and "kodi" not in lower_text:
         return None
 
-    # Reklama va e'lon bo'lsa darhol rad etamiz
-    for bad in _IGNORE_KEYWORDS:
+    # Aniq spam/reklama bo'lsa rad etamiz
+    for bad in _SPAM_KEYWORDS:
         if bad in lower_text:
             return None
 
-    # Kodni aniqlash (Majburiy!)
+    # 2. Kodni aniqlash
     bot_code = None
     for pattern in _KOD_PATTERNS:
         matches = pattern.findall(text)
@@ -174,8 +169,12 @@ def parse_post(text: str, message_id: int = None) -> dict | None:
 
         clean = _clean_emojis(line)
         if clean and len(clean) > 2 and not clean.startswith("@"):
-            # Sarlavha yoki boshqa gap bo'lmasa nom nomzodi sifatida olamiz
-            if not any(skip in clean.lower() for skip in ["ajoyib premyera", "premyera", "ko'rmagansiz", "kormagansiz"]):
+            # Sarlavha yoki reklama so'zlari bo'lmasa nom nomzodi sifatida olamiz
+            c_low = clean.lower()
+            if not any(skip in c_low for skip in [
+                "ajoyib premyera", "premyera", "ko'rmagansiz", "kormagansiz",
+                "yangi kino yuklandi", "yangi kino", "bugun ko'rishga", "bugun korishga"
+            ]):
                 plain_candidates.append(clean)
 
     if not result["title"] and plain_candidates:
