@@ -6,7 +6,7 @@ import logging
 import re
 from telegram import (
     Update, InlineKeyboardMarkup, InlineKeyboardButton,
-    ForceReply
+    ForceReply, ReplyKeyboardMarkup, KeyboardButton
 )
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
@@ -22,10 +22,11 @@ from config import (
 from database import (
     init_db, search_movie, add_movie, log_search,
     get_all_movies, delete_movie, movie_exists_by_code, get_stats,
-    get_client
+    get_client, get_random_movie, get_movies_by_genre, get_top_movies,
+    get_similar_movies, get_most_searched
 )
 from channel_parser import parse_post, parse_post_multiple
-from ai_service import ask_ai_for_movie_title, parse_post_with_ai
+from ai_service import ask_ai_for_movie_title, parse_post_with_ai, ask_ai_recommend
 
 # ─── Logging ─────────────────────────────────────────────────
 logging.basicConfig(
@@ -170,6 +171,59 @@ def admin_keyboard() -> InlineKeyboardMarkup:
     ])
 
 
+# ─── Janrlar xaritasi ──────────────────────────────────────────
+GENRE_MAP = {
+    "💥 Jangari":     "jangari",
+    "🚀 Fantastika":  "fantastika",
+    "😂 Komediya":    "komediya",
+    "😱 Dahshat":     "horror",
+    "🧸 Multfilm":    "multfilm",
+    "💕 Sevgi":       "sevgi",
+    "🔪 Triller":     "triller",
+    "🏛 Tarix":       "tarix",
+    "👨‍👩‍👧 Oilaviy":  "oilaviy",
+    "🎭 Drama":       "drama",
+}
+
+
+def main_menu_keyboard() -> ReplyKeyboardMarkup:
+    """Foydalanuvchi uchun doimiy pastki menyu tugmalari"""
+    return ReplyKeyboardMarkup(
+        [
+            [KeyboardButton("🎲 Tasodifiy kino"), KeyboardButton("🔥 Top kinolar")],
+            [KeyboardButton("🎭 Janrlar bo'yicha"), KeyboardButton("🤖 Kinochi AI")],
+        ],
+        resize_keyboard=True,
+        input_field_placeholder="Kino nomini yozing...",
+    )
+
+
+def genre_inline_keyboard() -> InlineKeyboardMarkup:
+    """Janrlar tanlash uchun inline tugmalar"""
+    rows = []
+    genre_items = list(GENRE_MAP.items())
+    for i in range(0, len(genre_items), 2):
+        row = []
+        for label, _ in genre_items[i:i+2]:
+            row.append(InlineKeyboardButton(label, callback_data=f"genre:{label}"))
+        rows.append(row)
+    return InlineKeyboardMarkup(rows)
+
+
+def format_similar_movies(similars: list[dict]) -> str:
+    """O'xshash kinolar uchun qisqa matn"""
+    if not similars:
+        return ""
+    lines = ["\n\n💡 <b>Sizga yana yoqishi mumkin:</b>"]
+    for m in similars[:4]:
+        code = m.get("bot_code", "")
+        yr = f" ({m['year']})" if m.get("year") else ""
+        lines.append(f"  • <b>{m['title']}{yr}</b>  👉  <code>{code}</code>")
+    return "\n".join(lines)
+
+
+
+
 # ═══════════════════════════════════════════════════════════════
 #  CALLBACK: Tugmalar bosilganda
 # ═══════════════════════════════════════════════════════════════
@@ -178,6 +232,65 @@ async def on_callback_query(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     data = q.data
+
+    # Janr tugmasi bosilganda
+    if data.startswith("genre:"):
+        label = data[len("genre:"):]
+        keyword = GENRE_MAP.get(label)
+        if keyword:
+            movies = get_movies_by_genre(keyword)
+            if movies:
+                lines = [f"🎭 <b>{label} janridagi kinolar:</b>\n"]
+                btns = []
+                for m in movies[:8]:
+                    yr = f" ({m['year']})" if m.get("year") else ""
+                    code = m.get("bot_code", "")
+                    code_num = re.sub(r"[^\d]", "", code)
+                    lines.append(f"🎬 <b>{m['title']}{yr}</b>  👉  <code>{code}</code>")
+                    bot_url = f"https://t.me/{BOT_USERNAME}?start={code_num}" if code_num else f"https://t.me/{BOT_USERNAME}"
+                    btns.append([InlineKeyboardButton(f"🤖 {m['title'][:25]} ({code})", url=bot_url)])
+                btns.append([InlineKeyboardButton("🎭 Boshqa janr", callback_data="show_genres")])
+                await q.message.reply_html(
+                    "\n".join(lines),
+                    reply_markup=InlineKeyboardMarkup(btns),
+                    disable_web_page_preview=True
+                )
+            else:
+                await q.message.reply_html(
+                    f"😕 <b>{label}</b> janrida hozircha kino topilmadi.\n\n"
+                    "Boshqa janr tanlang yoki kino nomini yozing!",
+                    reply_markup=genre_inline_keyboard()
+                )
+        return
+
+    # Janrlar menyusini chiqarish
+    if data == "show_genres":
+        await q.message.reply_html(
+            "🎭 <b>Qaysi janrdagi kinoni ko'rmoqchisiz?</b>\n\nQuyidagi tugmalardan birini tanlang:",
+            reply_markup=genre_inline_keyboard()
+        )
+        return
+
+    # Tasodifiy kino callback
+    if data == "random_movie":
+        m = get_random_movie()
+        if m:
+            buttons = []
+            code_clean = re.sub(r"[^\d]", "", m.get("bot_code", ""))
+            if code_clean:
+                bot_url = f"https://t.me/{BOT_USERNAME}?start={code_clean}"
+                buttons.append([InlineKeyboardButton("🤖 Kinoni olish", url=bot_url)])
+            if m.get("channel_msg_id") and CHANNEL_ID:
+                uname = str(CHANNEL_ID).lstrip("@")
+                url   = f"https://t.me/{uname}/{m['channel_msg_id']}"
+                buttons.append([InlineKeyboardButton("📺 Kanaldagi post", url=url)])
+            buttons.append([InlineKeyboardButton("🎲 Boshqa tavsiya", callback_data="random_movie")])
+            await q.message.reply_html(
+                "🎲 <b>Boshqa tavsiya:</b>\n\n" + movie_card(m),
+                reply_markup=InlineKeyboardMarkup(buttons),
+                disable_web_page_preview=True
+            )
+        return
 
     # Guruhdagi qidiruv tugmasi
     if data == "search_ask":
@@ -394,6 +507,60 @@ async def on_user_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await _handle_instagram(ctx, msg, text, user, chat)
         return
 
+    # ── Doimiy menyu tugmalari ────────────────────────────────
+    t_lower = text.strip().lower()
+    if text == "🎲 Tasodifiy kino":
+        await cmd_random(update, ctx)
+        return
+    if text == "🔥 Top kinolar":
+        await cmd_top(update, ctx)
+        return
+    if text == "🎭 Janrlar bo'yicha":
+        await cmd_genre(update, ctx)
+        return
+    if text == "🤖 Kinochi AI":
+        await cmd_ai(update, ctx)
+        return
+
+    # ── AI kayfiyat/tavsiya (masalan "kulgili kino tavsiya ber") ──
+    MOOD_KEYWORDS = [
+        "tavsiya", "qanday kino", "nima ko'ray", "nima ko'rsam", "kayfiyat",
+        "qaysi kino", "bir kino", "qiziq kino", "yaxshi kino", "zo'r kino",
+        "komediya ayt", "dahshat kino", "sevgi kino", "jangari ayt",
+        "tavsiya ber", "tavsiya qil",
+    ]
+    is_mood_request = any(kw in t_lower for kw in MOOD_KEYWORDS)
+    if is_mood_request and not any(text.lower().startswith(w) for w in ["kinochi", "/kinochi"]):
+        try:
+            ai_rec = ask_ai_recommend(text)
+            if ai_rec and ai_rec.get("genre_keyword"):
+                gk = ai_rec["genre_keyword"]
+                reason = ai_rec.get("reason", "")
+                movies = get_movies_by_genre(gk, limit=6)
+                if movies:
+                    lines = [
+                        f"🤖 <b>AI tavsiyasi:</b> {reason}\n",
+                        f"🎭 <b>{gk.capitalize()} janridan</b> sizga mos kinolar:\n"
+                    ]
+                    btns = []
+                    for mv in movies[:6]:
+                        yr = f" ({mv['year']})" if mv.get("year") else ""
+                        code = mv.get("bot_code", "")
+                        code_num = re.sub(r"[^\d]", "", code)
+                        lines.append(f"🎬 <b>{mv['title']}{yr}</b>  👉  <code>{code}</code>")
+                        if code_num:
+                            bot_url = f"https://t.me/{BOT_USERNAME}?start={code_num}"
+                            btns.append([InlineKeyboardButton(f"▶️ {mv['title'][:30]}", url=bot_url)])
+                    btns.append([InlineKeyboardButton("🎭 Boshqa janr tanlash", callback_data="show_genres")])
+                    await msg.reply_html(
+                        "\n".join(lines),
+                        reply_markup=InlineKeyboardMarkup(btns),
+                        disable_web_page_preview=True
+                    )
+                    return
+        except Exception as e:
+            logger.warning(f"AI mood tavsiya xatosi: {e}")
+
     # ── "kinochi ..." bilan boshlangan xabarlar (to'g'ridan-to'g'ri AI orqali kino topish) ──
     is_kinochi = any(
         text.lower().startswith(w) for w in ["kinochi", "/kinochi", "!kinochi"]
@@ -533,6 +700,20 @@ async def _handle_search(ctx, msg, text, user, chat, is_explicit: bool = True, i
             reply_text = movie_card(m)
             if ai_suggested_title:
                 reply_text = f"🤖 <i>AI aniqlagan kino: <b>{ai_suggested_title}</b></i>\n\n" + reply_text
+
+            # O'xshash kinolar qo'shamiz
+            try:
+                similars = get_similar_movies(
+                    movie_id=m.get("id", 0),
+                    genre=m.get("genre"),
+                    title=m.get("title"),
+                    limit=4
+                )
+                if similars:
+                    reply_text += format_similar_movies(similars)
+            except Exception:
+                pass
+
         else:
             # Agar bir nechta kino topilsa — barchasini tugmali ro'yxat qilib chiqaramiz!
             reply_text, keyboard = format_multiple_movies(results, query, ai_suggested_title)
@@ -628,6 +809,28 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type != "private":
         return
+    args = ctx.args
+    # /start <code> — kino kodi bilan kelgan bo'lsa, to'g'ridan-to'g'ri kino yuboramiz
+    if args and args[0].isdigit():
+        code_num = args[0]
+        results = search_movie(code_num)
+        if results:
+            m = results[0]
+            buttons = []
+            code_clean = re.sub(r"[^\d]", "", m.get("bot_code", ""))
+            bot_url = f"https://t.me/{BOT_USERNAME}?start={code_clean}"
+            buttons.append([InlineKeyboardButton("🤖 Kinoni botdan olish", url=bot_url)])
+            if m.get("channel_msg_id") and CHANNEL_ID:
+                uname = str(CHANNEL_ID).lstrip("@")
+                url   = f"https://t.me/{uname}/{m['channel_msg_id']}"
+                buttons.append([InlineKeyboardButton("📺 Kanaldagi postni ko'rish", url=url)])
+            await update.message.reply_html(
+                movie_card(m),
+                reply_markup=InlineKeyboardMarkup(buttons),
+                disable_web_page_preview=True
+            )
+            return
+
     if update.effective_user.id == ADMIN_ID:
         await update.message.reply_html(
             "👑 <b>Admin boshqaruv paneli</b>\n\n"
@@ -642,7 +845,11 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
     else:
         await update.message.reply_html(
-            f"👋 <b>Salom!</b>\nKino qidirish uchun nomini yozing!\n📺 {CHANNEL_ID}"
+            f"👋 <b>Salom, {update.effective_user.first_name}!</b>\n\n"
+            "🎬 Kino nomi yoki kodini yozing va men topib beraman!\n\n"
+            "📺 Kanal: <b>@UzKinoMoviie</b>\n\n"
+            "👇 Quyidagi tugmalardan ham foydalanishingiz mumkin:",
+            reply_markup=main_menu_keyboard()
         )
 
 
@@ -744,13 +951,85 @@ async def cmd_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     s = get_stats()
     rate = f"{s['found_count']/s['total_searches']*100:.1f}%" if s["total_searches"] else "—"
+    top_q = get_most_searched(5)
+    top_text = ""
+    for i, item in enumerate(top_q, 1):
+        top_text += f"  {i}. <code>{item['query']}</code> — <b>{item['count']}x</b>\n"
     await update.message.reply_html(
         f"📊 <b>Statistika</b>\n\n"
         f"🎬 Kinolar: <b>{s['total_movies']}</b>\n"
         f"🔍 Qidiruvlar: <b>{s['total_searches']}</b>\n"
         f"✅ Topildi: <b>{s['found_count']}</b>\n"
         f"❌ Topilmadi: <b>{s['not_found']}</b>\n"
-        f"📈 Muvaffaqiyat: <b>{rate}</b>"
+        f"📈 Muvaffaqiyat: <b>{rate}</b>\n\n"
+        f"🔥 <b>Eng ko'p qidirilganlar:</b>\n{top_text or '  — ma\'lumot yo\'q'}"
+    )
+
+
+async def cmd_top(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Top kinolar: /top yoki 🔥 Top kinolar tugmasi"""
+    movies = get_top_movies(10)
+    if not movies:
+        await update.message.reply_html("😕 Hozircha bazada kinolar yo'q.")
+        return
+    lines = ["🔥 <b>Eng so'nggi qo'shilgan kinolar:</b>\n"]
+    btns = []
+    for i, m in enumerate(movies, 1):
+        yr = f" ({m['year']})" if m.get("year") else ""
+        code = m.get("bot_code", "")
+        code_num = re.sub(r"[^\d]", "", code)
+        lines.append(f"{i}. 🎬 <b>{m['title']}{yr}</b>  👉  <code>{code}</code>")
+        if code_num:
+            bot_url = f"https://t.me/{BOT_USERNAME}?start={code_num}"
+            btns.append([InlineKeyboardButton(f"▶️ {i}. {m['title'][:28]}", url=bot_url)])
+    await update.message.reply_html(
+        "\n".join(lines),
+        reply_markup=InlineKeyboardMarkup(btns) if btns else None,
+        disable_web_page_preview=True
+    )
+
+
+async def cmd_random(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Tasodifiy kino tavsiyasi: /random yoki 🎲 Tasodifiy kino tugmasi"""
+    m = get_random_movie()
+    if not m:
+        await update.message.reply_html("😕 Hozircha bazada kinolar yo'q.")
+        return
+    buttons = []
+    code_clean = re.sub(r"[^\d]", "", m.get("bot_code", ""))
+    if code_clean:
+        bot_url = f"https://t.me/{BOT_USERNAME}?start={code_clean}"
+        buttons.append([InlineKeyboardButton("🤖 Kinoni olish", url=bot_url)])
+    if m.get("channel_msg_id") and CHANNEL_ID:
+        uname = str(CHANNEL_ID).lstrip("@")
+        url   = f"https://t.me/{uname}/{m['channel_msg_id']}"
+        buttons.append([InlineKeyboardButton("📺 Kanaldagi post", url=url)])
+    buttons.append([InlineKeyboardButton("🎲 Boshqa tavsiya", callback_data="random_movie")])
+    await update.message.reply_html(
+        "🎲 <b>Bugun sizga tavsiya:</b>\n\n" + movie_card(m),
+        reply_markup=InlineKeyboardMarkup(buttons),
+        disable_web_page_preview=True
+    )
+
+
+async def cmd_genre(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Janrlar menyusi: /genre yoki 🎭 Janrlar bo'yicha tugmasi"""
+    await update.message.reply_html(
+        "🎭 <b>Qaysi janrdagi kinoni ko'rmoqchisiz?</b>\n\n"
+        "Quyidagi tugmalardan birini tanlang:",
+        reply_markup=genre_inline_keyboard()
+    )
+
+
+async def cmd_ai(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Kinochi AI yordamida kino topish: /ai yoki 🤖 Kinochi AI tugmasi"""
+    await update.message.reply_html(
+        "🤖 <b>Kinochi AI</b>\n\n"
+        "Quyidagicha yozib yuboring:\n"
+        "• <i>kinochi: o'rgimchak odam haqida kino</i>\n"
+        "• <i>kinochi: kulgili kino tavsiya ber</i>\n"
+        "• <i>kinochi: 2023 yilgi jangari kino</i>\n\n"
+        "Yoki shunchaki <b>kinochi</b> so'zidan boshlang! 👇"
     )
 
 
@@ -795,6 +1074,10 @@ def main():
     app.add_handler(CommandHandler("listmovies", cmd_listmovies))
     app.add_handler(CommandHandler("delmovie",   cmd_delmovie))
     app.add_handler(CommandHandler("stats",      cmd_stats))
+    app.add_handler(CommandHandler("top",        cmd_top))
+    app.add_handler(CommandHandler("random",     cmd_random))
+    app.add_handler(CommandHandler("genre",      cmd_genre))
+    app.add_handler(CommandHandler("ai",         cmd_ai))
 
     # ── Callback tugmalar ────────────────────────────────────
     app.add_handler(CallbackQueryHandler(on_callback_query))

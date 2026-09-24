@@ -211,3 +211,35 @@ POST:
         logger.warning(f"AI JSON parse xatosi: {e}")
 
     return []
+
+
+def ask_ai_recommend(user_request: str, available_genres: list[str] = None) -> dict | None:
+    """
+    Foydalanuvchining kayfiyati yoki so'rovi asosida kino janrini va tavsiyasini qaytaradi.
+    Qaytariladigan format: {"genre_keyword": "janr so'zi", "reason": "sababining qisqacha matni"}
+    """
+    genres_hint = ", ".join(available_genres) if available_genres else "jangari, fantastika, komediya, horror, oilaviy, drama, triller"
+    prompt = f"""Sen kino maslahatchisin. Foydalanuvchi kino ko'rmoqchi va quyidagicha yozdi:
+"{user_request}"
+
+Foydalanuvchining kayfiyati yoki istagiga qarab, quyidagi janrlar orasidan eng mos birini tanla: {genres_hint}
+
+Hech qanday izohsiz, FAQAT JSON formatida javob ber:
+{{"genre_keyword": "tanlangan janr", "reason": "nima uchun shu janr mos (1 jumla, o'zbek tilida)"}}
+"""
+    ans = _call_gemini(prompt)
+    if not ans:
+        return None
+    try:
+        matches = re.findall(r'\{[^{}]*"genre_keyword"[^{}]*\}', ans, flags=re.DOTALL)
+        for m in reversed(matches):
+            data = json.loads(m)
+            if isinstance(data, dict) and data.get("genre_keyword"):
+                gk = _clean_ai_title(data["genre_keyword"])
+                reason = data.get("reason", "")
+                if gk and gk.lower() not in ["...", "janr"]:
+                    logger.info(f"🤖 AI tavsiya janri: '{user_request}' -> '{gk}'")
+                    return {"genre_keyword": gk, "reason": reason}
+    except Exception:
+        pass
+    return None

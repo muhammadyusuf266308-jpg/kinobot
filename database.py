@@ -281,3 +281,121 @@ def get_stats() -> dict:
         "found_count":    found_count,
         "not_found":      not_found,
     }
+
+
+def get_random_movie() -> dict | None:
+    """Tasodifiy bitta kino qaytaradi"""
+    import random
+    client = get_client()
+    try:
+        res = client.table("movies").select("*").execute()
+        data = res.data or []
+        return random.choice(data) if data else None
+    except Exception as e:
+        logger.error(f"get_random_movie xatosi: {e}")
+        return None
+
+
+def get_movies_by_genre(genre_keyword: str, limit: int = 8) -> list[dict]:
+    """Janr bo'yicha kinolarni qaytaradi"""
+    client = get_client()
+    try:
+        res = (
+            client.table("movies")
+            .select("*")
+            .ilike("genre", f"%{genre_keyword}%")
+            .limit(limit)
+            .execute()
+        )
+        return res.data or []
+    except Exception as e:
+        logger.error(f"get_movies_by_genre xatosi: {e}")
+        return []
+
+
+def get_top_movies(limit: int = 10) -> list[dict]:
+    """Eng so'nggi qo'shilgan kinolarni (Top) qaytaradi"""
+    client = get_client()
+    try:
+        res = (
+            client.table("movies")
+            .select("*")
+            .order("id", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        return res.data or []
+    except Exception as e:
+        logger.error(f"get_top_movies xatosi: {e}")
+        return []
+
+
+def get_similar_movies(movie_id: int, genre: str = None, title: str = None, limit: int = 4) -> list[dict]:
+    """O'xshash kinolarni topadi (janr yoki nom bo'yicha)"""
+    client = get_client()
+    results = []
+    try:
+        if genre:
+            genre_word = genre.split()[0].strip("#") if genre else ""
+            if genre_word and len(genre_word) >= 3:
+                res = (
+                    client.table("movies")
+                    .select("*")
+                    .ilike("genre", f"%{genre_word}%")
+                    .neq("id", movie_id)
+                    .limit(limit + 2)
+                    .execute()
+                )
+                results.extend(res.data or [])
+
+        if len(results) < limit and title:
+            words = [w for w in normalize_title(title).split() if len(w) >= 4]
+            for word in words[:2]:
+                res_w = (
+                    client.table("movies")
+                    .select("*")
+                    .ilike("title", f"%{word}%")
+                    .neq("id", movie_id)
+                    .limit(limit)
+                    .execute()
+                )
+                for r in (res_w.data or []):
+                    if not any(x["id"] == r["id"] for x in results):
+                        results.append(r)
+                if len(results) >= limit:
+                    break
+    except Exception as e:
+        logger.error(f"get_similar_movies xatosi: {e}")
+
+    seen = set()
+    unique = []
+    for r in results:
+        if r["id"] not in seen:
+            seen.add(r["id"])
+            unique.append(r)
+    return unique[:limit]
+
+
+def get_most_searched(limit: int = 10) -> list[dict]:
+    """Eng ko'p qidirilgan so'rovlar statistikasi"""
+    client = get_client()
+    try:
+        res = (
+            client.table("search_log")
+            .select("query")
+            .eq("found", True)
+            .order("id", desc=True)
+            .limit(500)
+            .execute()
+        )
+        queries = [r["query"] for r in (res.data or [])]
+        counts: dict[str, int] = {}
+        for q in queries:
+            q_norm = q.strip().lower()
+            if len(q_norm) >= 2:
+                counts[q_norm] = counts.get(q_norm, 0) + 1
+        sorted_q = sorted(counts.items(), key=lambda x: x[1], reverse=True)
+        return [{"query": q, "count": c} for q, c in sorted_q[:limit]]
+    except Exception as e:
+        logger.error(f"get_most_searched xatosi: {e}")
+        return []
