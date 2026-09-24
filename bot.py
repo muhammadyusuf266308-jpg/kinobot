@@ -25,7 +25,7 @@ from database import (
     get_client
 )
 from channel_parser import parse_post, parse_post_multiple
-from ai_service import ask_ai_for_movie_title
+from ai_service import ask_ai_for_movie_title, parse_post_with_ai
 
 # ─── Logging ─────────────────────────────────────────────────
 logging.basicConfig(
@@ -589,6 +589,12 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     
     # Ro'yxat yoki yakka post
     movies_list = parse_post_multiple(text, message_id=post.message_id)
+    if not movies_list:
+        try:
+            movies_list = parse_post_with_ai(text, message_id=post.message_id)
+        except Exception as e:
+            logger.warning(f"AI post tahlil xatosi: {e}")
+
     if not movies_list:
         return
 

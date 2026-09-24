@@ -9,10 +9,11 @@ logger = logging.getLogger(__name__)
 
 _YEAR_RE = re.compile(r"\b(19|20)\d{2}\b")
 
-# Aniq kod qidiruv: "Kino kodi: 226", "Kino kodi 209", "Kod: 237", "Kod:216", "Kodi: 165"
+# Aniq kod qidiruv: "Kino kodi: 226", "Film kodi: 110", "Kino kodi; 214", "<<205>> kodini", "`110`"
 _KOD_PATTERNS = [
-    re.compile(r"(?i)(?:🔎\s*)?(?:kino\s*)?kod[iı]?\s*[:\-]?\s*(\d+)"),
-    re.compile(r"(?i)\bkod\s*[:\-]?\s*(\d+)"),
+    re.compile(r"(?i)(?:🔎\s*)?(?:kino|film)?\s*kod[iı]?\s*[:;\-–—]?\s*[`*\"']?\s*(\d{1,5})"),
+    re.compile(r"(?i)\bkod[iı]?\s*[:;\-–—]?\s*[`*\"']?\s*(\d{1,5})"),
+    re.compile(r"(?i)(?:<<|`|\b)(\d{1,5})(?:>>|`|\b)\s*(?:kodini|kodi|kod)"),
 ]
 
 # Ro'yxat formati qatori: masalan "127 — 📺Tor" yoki "147 - Momaqaldiroqlar" yoki "№124. Qasoskorlar"
@@ -97,6 +98,8 @@ def parse_post(text: str, message_id: int = None) -> dict | None:
     if not text or len(text.strip()) < 8:
         return None
 
+    # Markdown belgilarini tozalash (*, _, `, ~)
+    text = re.sub(r"[*_`~]", "", text)
     lower_text = text.lower()
 
     # 1. Qat'iy qoida: Post matnida "kod" yoki "kodi" so'zi bo'lishi SHART!
@@ -143,18 +146,21 @@ def parse_post(text: str, message_id: int = None) -> dict | None:
             continue
 
         # Kod qatorining o'zini nom deb olmaslik
-        if re.match(r"(?i)^(?:🔎\s*)?(?:kino\s*)?kod[iı]?\s*[:\-]?\s*\d+$", line):
+        if re.search(r"(?i)(?:kino|film)?\s*kod[iı]?", line) or re.search(r"(?i)\bkod\b", line):
             continue
 
         m = _FIELD_RE.match(line)
-        if m:
+        # Agar key 2 tadan ko'p so'z bo'lsa (masalan: "O'rgimchak odam 4: Yangi kun"), bu meta-maydon emas, sarlavha!
+        if m and len(m.group(1).strip().split()) <= 2:
             raw_key = m.group(1).strip()
             val     = m.group(2).strip()
             key     = _normalize_key(raw_key)
 
-            if any(k in key for k in ["kino nomi", "nomi", "film nomi", "title"]):
+            if not key or any(k in key for k in ["kino nomi", "nomi", "film nomi", "title", "kino", "film"]):
                 if not result["title"]:
-                    result["title"] = val
+                    clean_v = _clean_emojis(val).strip(". :–-")
+                    if clean_v and len(clean_v) > 1 and not any(skip in clean_v.lower() for skip in ["botimiz", "kanalimiz", "http"]):
+                        result["title"] = clean_v
             elif any(k in key for k in ["yili", "yil", "sanasi", "sana", "year"]):
                 yr = _YEAR_RE.search(val)
                 if yr:
@@ -177,7 +183,9 @@ def parse_post(text: str, message_id: int = None) -> dict | None:
             c_low = clean.lower()
             if not any(skip in c_low for skip in [
                 "ajoyib premyera", "premyera", "ko'rmagansiz", "kormagansiz",
-                "yangi kino yuklandi", "yangi kino", "bugun ko'rishga", "bugun korishga"
+                "yangi kino yuklandi", "yangi kino", "bugun ko'rishga", "bugun korishga",
+                "mualiflik huquqi", "kanalga joylamadik", "kutgan premyera", "barcha kutgan",
+                "barcha qismlari", "hamma qismlari"
             ]):
                 plain_candidates.append(clean)
 

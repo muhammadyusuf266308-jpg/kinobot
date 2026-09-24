@@ -44,6 +44,15 @@ async def main():
 
             movies_list = parse_post_multiple(text, message_id=message.id)
             if not movies_list:
+                # Agar postda kod va raqam bo'lib, parser tuta olmagan bo'lsa, AI ga tekshirtiramiz
+                import re
+                if re.search(r"(?i)\bkod", text) and re.search(r"\d{2,5}", text):
+                    try:
+                        movies_list = parse_post_with_ai(text, message_id=message.id)
+                    except Exception:
+                        pass
+
+            if not movies_list:
                 skipped += 1
                 continue
 
