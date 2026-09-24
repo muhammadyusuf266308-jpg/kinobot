@@ -1,6 +1,6 @@
 # ============================================================
-#  ai_service.py  –  Google Gemini AI Xizmati
-#  Syujet bo'yicha qidiruv va Aqlli post tahlili
+#  ai_service.py  –  Google Gemini & Gemma AI Xizmati
+#  Syujet bo'yicha qidiruv va Dinamik Model Reytingi
 # ============================================================
 import os
 import re
@@ -15,43 +15,69 @@ logger = logging.getLogger(__name__)
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
-# Ishonchli Gemini modellari ketma-ketligi (birinchisi band bo'lsa, keyingisiga o'tadi)
+# Ishonchli AI modellari ketma-ketligi (Dinamik moslashuvchan tartib)
+# Qaysi model birinchi bo'lib muvaffaqiyatli javob bersa, u 1-o'ringa ko'tariladi.
+# Ishlamagan yoki vaqti o'tib ketgan modellar oxiriga tushiriladi.
 MODELS = [
-    "gemini-3.6-flash",
     "gemma-4-26b-a4b-it",
+    "gemini-3.6-flash",
     "gemini-3.5-flash",
     "gemini-3.1-flash-lite",
 ]
 
 
-def _call_gemini(prompt: str, json_mode: bool = False) -> str | None:
-    """Gemini API ga xavfsiz so'rov yuborish"""
+def _promote_model(model: str):
+    """Muvaffaqiyatli ishlagan modelni ro'yxatning 1-o'rniga olib chiqadi."""
+    global MODELS
+    if model in MODELS and MODELS[0] != model:
+        MODELS.remove(model)
+        MODELS.insert(0, model)
+        logger.info(f"🚀 Model {model} muvaffaqiyatli ishladi va 1-o'ringa ko'tarildi! Yangi tartib: {MODELS}")
+
+
+def _demote_model(model: str):
+    """Xato bergan yoki qotib qolgan modelni ro'yxat oxiriga tushiradi."""
+    global MODELS
+    if model in MODELS and len(MODELS) > 1:
+        MODELS.remove(model)
+        MODELS.append(model)
+        logger.warning(f"⚠️ Model {model} muammoli bo'lgani sababli oxiriga surildi. Yangi tartib: {MODELS}")
+
+
+def _call_gemini(prompt: str, json_mode: bool = False, timeout: int = 10) -> str | None:
+    """Gemini / Gemma API ga tezkor va adaptiv so'rov yuborish"""
     if not GEMINI_API_KEY:
         return None
 
     data = {
-        "contents": [{"parts": [{"text": prompt}]}]
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"maxOutputTokens": 450}
     }
     if json_mode:
-        data["generationConfig"] = {"response_mime_type": "application/json"}
+        data["generationConfig"]["response_mime_type"] = "application/json"
 
-    for model in MODELS:
+    # Hozirgi modellarni nusxalab iteratsiya qilamiz
+    for model in list(MODELS):
         try:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
-            res = requests.post(url, json=data, timeout=15)
+            res = requests.post(url, json=data, timeout=timeout)
             if res.status_code == 200:
                 result = res.json()
                 candidates = result.get("candidates", [])
                 if candidates:
                     parts = candidates[0].get("content", {}).get("parts", [])
                     if parts:
-                        return parts[0].get("text", "").strip()
+                        text = parts[0].get("text", "").strip()
+                        if text:
+                            _promote_model(model)
+                            return text
+                _demote_model(model)
             else:
-                logger.warning(f"Gemini {model} javob bermadi (status {res.status_code})")
-                continue
+                logger.warning(f"Model {model} javob bermadi (status {res.status_code})")
+                _demote_model(model)
         except Exception as e:
-            logger.warning(f"Gemini {model} xatosi: {e}")
-            continue
+            logger.warning(f"Model {model} vaqti tugadi yoki xatolik: {e}")
+            _demote_model(model)
 
     return None
 
@@ -73,41 +99,61 @@ def ask_ai_for_movie_title(user_query: str) -> dict | None:
     Foydalanuvchi kino syujetini yoki tavsifini yozganda,
     AI dan kinoning o'zbekcha va inglizcha nomlarini aniqlab berishni so'raydi.
     """
-    prompt = f"""Sen kino ekspertisan. Foydalanuvchi kino haqida yozgan tavsif, syujet yoki xato nomdan qidirilayotgan kinoni aniqla.
-Javobni quyidagi JSON formatda ber:
+    prompt = f"""Kino ekspertisan. Foydalanuvchi yozgan tavsif yoki syujetdan kino nomini aniqla.
+Hech qanday izohsiz, to'g'ridan-to'g'ri FAQAT quyidagi JSON formatida javob ber:
 {{
-  "title_uz": "O'zbekcha nomi (masalan: O'rgimchak odam, Qasoskorlar, Tor, Titanik)",
-  "title_en": "Inglizcha nomi (masalan: Spider-Man, The Avengers, Thor, Titanic)"
+  "title_uz": "O'zbekcha nomi",
+  "title_en": "Inglizcha nomi"
 }}
 
-Foydalanuvchi so'rovi:
-"{user_query}"
+Foydalanuvchi: "{user_query}"
 """
 
-    ans = _call_gemini(prompt, json_mode=True)
+    ans = _call_gemini(prompt)
     if ans:
-        try:
-            clean = re.sub(r"^```(?:json)?\s*", "", ans.strip(), flags=re.IGNORECASE)
-            clean = re.sub(r"\s*```$", "", clean).strip()
-            data = json.loads(clean)
-            if isinstance(data, dict):
-                title_uz = _clean_ai_title(data.get("title_uz", ""))
-                title_en = _clean_ai_title(data.get("title_en", ""))
-                res = {"title_uz": title_uz, "title_en": title_en}
-                logger.info(f"🤖 AI aniqladi: '{user_query}' -> {res}")
-                return res
-        except Exception:
-            pass
+        # 1. JSON javobni qidirish (teskari tartibda, oxirgi aniq natijani olish uchun)
+        matches = re.findall(r'\{[^{}]*"title_uz"[^{}]*\}', ans, flags=re.DOTALL)
+        for m in reversed(matches):
+            try:
+                data = json.loads(m)
+                if isinstance(data, dict):
+                    uz = _clean_ai_title(data.get("title_uz", ""))
+                    en = _clean_ai_title(data.get("title_en", ""))
+                    # Promptdagi placeholder larni inkor qilish
+                    if uz.lower() not in ["o'zbekcha nomi", "kino nomi", "...", "nomi", "oʻzbekcha nomi"] and (uz or en):
+                        res = {"title_uz": uz or en, "title_en": en or uz}
+                        logger.info(f"🤖 AI aniqladi (json): '{user_query}' -> {res}")
+                        return res
+            except Exception:
+                continue
 
-    # Agar JSON bo'lmasa oddiy matn sifatida so'raymiz
-    text_prompt = f"Kino syujetidan o'zbekcha kino nomini 1-3 so'z bilan yoz:\n\"{user_query}\"\nKino nomi:"
-    raw_ans = _call_gemini(text_prompt)
-    if raw_ans:
-        lines = [line.strip(' \t\r"*-\'') for line in raw_ans.splitlines() if line.strip(' \t\r"*-')]
-        clean_ans = lines[-1] if lines else raw_ans
-        clean_ans = _clean_ai_title(clean_ans)
-        logger.info(f"🤖 AI aniqladi (raw): '{user_query}' -> '{clean_ans}'")
-        return {"title_uz": clean_ans, "title_en": clean_ans}
+        # 2. To'g'ridan-to'g'ri kalit regex ("title_uz": "...", "title_en": "...")
+        uz_keys = [m for m in re.findall(r'"title_uz"\s*:\s*"([^"]+)"', ans) if m.lower() not in ["o'zbekcha nomi", "kino nomi", "...", "nomi"]]
+        en_keys = [m for m in re.findall(r'"title_en"\s*:\s*"([^"]+)"', ans) if m.lower() not in ["inglizcha nomi", "movie title", "...", "title"]]
+        if uz_keys or en_keys:
+            uz = _clean_ai_title(uz_keys[-1]) if uz_keys else ""
+            en = _clean_ai_title(en_keys[-1]) if en_keys else ""
+            if uz or en:
+                res = {"title_uz": uz or en, "title_en": en or uz}
+                logger.info(f"🤖 AI aniqladi (key-regex): '{user_query}' -> {res}")
+                return res
+
+        # 3. Kalit so'zlar bo'yicha qidirish (Uzbek: ... English: ...)
+        uz_match = re.findall(r"(?:Uzbek|O'zbekcha|Oʻzbekcha)\s*(?:Title|nomi)?\s*[:*–-]+\s*([^\n\r*`]+)", ans, re.IGNORECASE)
+        en_match = re.findall(r"(?:English|Inglizcha)\s*(?:Title|nomi)?\s*[:*–-]+\s*([^\n\r*`]+)", ans, re.IGNORECASE)
+        if uz_match or en_match:
+            uz = _clean_ai_title(uz_match[-1]) if uz_match else ""
+            en = _clean_ai_title(en_match[-1]) if en_match else ""
+            if uz or en:
+                res = {"title_uz": uz or en, "title_en": en or uz}
+                logger.info(f"🤖 AI aniqladi (title-regex): '{user_query}' -> {res}")
+                return res
+
+        # 4. Oddiy tozalangan matn
+        clean_ans = _clean_ai_title(ans.splitlines()[-1] if "\n" in ans else ans)
+        if clean_ans and len(clean_ans) < 60:
+            logger.info(f"🤖 AI aniqladi (raw): '{user_query}' -> '{clean_ans}'")
+            return {"title_uz": clean_ans, "title_en": clean_ans}
 
     return None
 
@@ -135,34 +181,32 @@ POST:
 {text}
 """
 
-    ans = _call_gemini(prompt, json_mode=True)
+    ans = _call_gemini(prompt)
     if not ans:
         return []
 
     try:
-        # JSON parsing
-        # Ba'zida model ```json ... ``` bilan berishi mumkin
-        cleaned = re.sub(r"^```json\s*|\s*```$", "", ans.strip())
-        items = json.loads(cleaned)
-        if isinstance(items, list):
-            res = []
-            for it in items:
-                if it.get("title") and it.get("bot_code"):
-                    # Kodni to'g'rilash
-                    code = str(it["bot_code"]).strip()
-                    if not code.lower().startswith("kod:"):
-                        code = f"Kod:{code}"
-                    res.append({
-                        "title": str(it["title"]).strip(),
-                        "title_ru": None,
-                        "title_en": None,
-                        "year": it.get("year"),
-                        "genre": it.get("genre"),
-                        "description": None,
-                        "bot_code": code,
-                        "channel_msg_id": message_id
-                    })
-            return res
+        json_array_match = re.search(r'\[[\s\S]*\]', ans)
+        if json_array_match:
+            items = json.loads(json_array_match.group(0))
+            if isinstance(items, list):
+                res = []
+                for it in items:
+                    if it.get("title") and it.get("bot_code"):
+                        code = str(it["bot_code"]).strip()
+                        if not code.lower().startswith("kod:"):
+                            code = f"Kod:{code}"
+                        res.append({
+                            "title": str(it["title"]).strip(),
+                            "title_ru": None,
+                            "title_en": None,
+                            "year": it.get("year"),
+                            "genre": it.get("genre"),
+                            "description": None,
+                            "bot_code": code,
+                            "channel_msg_id": message_id
+                        })
+                return res
     except Exception as e:
         logger.warning(f"AI JSON parse xatosi: {e}")
 
