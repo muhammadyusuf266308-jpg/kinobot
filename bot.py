@@ -541,70 +541,35 @@ async def cmd_panel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_cleansync(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Admin: /cleansync – Bazadagi eski aralashgan kinolarni tozalab, qayta to'g'ri yuklash"""
+    """Admin: /cleansync – Bazani tozalash"""
     if update.effective_user.id != ADMIN_ID:
         return
     client_db = get_client()
     try:
         client_db.table("movies").delete().neq("id", 0).execute()
-        await update.message.reply_text("🧹 Bazadagi eski yozuvlar tozalandi! Endi kanaldan faqat haqiqiy kinolar saralanmoqda...")
+        await update.message.reply_html(
+            "🧹 <b>Bazadagi eski ma'lumotlar tozalandi!</b>\n\n"
+            "Telegram xavfsizlik qoidasi sababli botlar kanal tarixini to'liq o'qiy olmaydi.\n"
+            "Kanal tarixidagi eski postlarni 1 marta bazaga yuklash uchun kompyuteringizda:\n"
+            "<code>cd D:\\kino-bot-prod</code>\n"
+            "<code>python sync_local.py</code>\n"
+            "buyrug'ini bering. Yangi kanal postlari esa avtomatik bazaga tushaveradi!"
+        )
     except Exception as e:
-        await update.message.reply_text(f"Tozalashda xatolik: {e}")
-    await cmd_sync(update, ctx)
+        await update.message.reply_text(f"Xatolik: {e}")
 
 
 async def cmd_sync(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
-    from config import API_ID, API_HASH
-    if not API_ID or not API_HASH:
-        await update.message.reply_html(
-            "❌ API_ID va API_HASH kerak!\nmy.telegram.org/apps dan oling."
-        )
-        return
-    msg = await update.message.reply_html(f"⏳ <b>Sinxronizatsiya...</b>\n📺 {CHANNEL_ID}")
-    try:
-        from telethon import TelegramClient
-        saved = skipped = errors = total = 0
-        client = TelegramClient("sync_session", API_ID, API_HASH)
-        await client.start(bot_token=BOT_TOKEN)
-        async with client:
-            async for message in client.iter_messages(CHANNEL_ID, reverse=True):
-                total += 1
-                text = message.text or message.message or ""
-                if not text:
-                    skipped += 1
-                    continue
-                movies_list = parse_post_multiple(text, message_id=message.id)
-                if not movies_list:
-                    skipped += 1
-                    continue
-                for parsed in movies_list:
-                    if movie_exists_by_code(parsed["bot_code"]):
-                        skipped += 1
-                        continue
-                    try:
-                        add_movie(**{k: parsed[k] for k in
-                                     ["title", "bot_code", "title_ru", "title_en",
-                                      "year", "genre", "description", "channel_msg_id"]})
-                        saved += 1
-                    except Exception as e:
-                        errors += 1
-                        logger.error(f"#{message.id}: {e}")
-                if total % 100 == 0:
-                    try:
-                        await msg.edit_text(f"⏳ O'qildi: {total} | Saqlandi: {saved}")
-                    except Exception:
-                        pass
-        await msg.edit_text(
-            f"✅ <b>Tugadi!</b>\n\n"
-            f"📦 O'qildi  : <b>{total}</b>\n"
-            f"💾 Saqlandi : <b>{saved}</b>\n"
-            f"⏭ O'tkazildi: <b>{skipped}</b>",
-            parse_mode=ParseMode.HTML
-        )
-    except Exception as e:
-        await msg.edit_text(f"❌ Xato:\n<code>{e}</code>", parse_mode=ParseMode.HTML)
+    await update.message.reply_html(
+        "ℹ️ <b>Kanal tarixini sinxronlash:</b>\n\n"
+        "Telegram xavfsizlik qoidasiga ko'ra botlar tarixni bevosita o'qiy olmaydi.\n"
+        "Tarixni 1 marta yuklab olish uchun kompyuterda quyidagini ishga tushiring:\n"
+        "<code>cd D:\\kino-bot-prod</code>\n"
+        "<code>python sync_local.py</code>\n\n"
+        "⚡ <i>Bundan keyin kanalga tashlanadigan yangi postlarni botning o'zi avtomatik qabul qilib saqlab ketaveradi!</i>"
+    )
 
 
 async def cmd_listmovies(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
