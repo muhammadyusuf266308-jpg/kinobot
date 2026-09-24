@@ -56,6 +56,18 @@ def _call_gemini(prompt: str, json_mode: bool = False) -> str | None:
     return None
 
 
+def _clean_ai_title(raw: str) -> str:
+    """AI qaytargan sarlavhadan markdown, 'Selected:', 'Title:' kabi ortiqcha prefikslarni tozalaydi"""
+    if not raw:
+        return ""
+    # Oldidagi 'Selected:', 'Title:', 'Kino nomi:' kabi so'zlarni tozalash
+    t = re.sub(r"(?i)^(?:selected|title|movie|kino\s*nomi|nomi|film|ans|javob)\s*[:*–-]+\s*", "", raw.strip())
+    # Markdown belgilari (*, _, `, ~, #)
+    t = re.sub(r"[*_`~#]", "", t)
+    # Qo'shtirnoq va tinish belgilari
+    return t.strip(' "\'«»\n.:–-')
+
+
 def ask_ai_for_movie_title(user_query: str) -> dict | None:
     """
     Foydalanuvchi kino syujetini yoki tavsifini yozganda,
@@ -79,8 +91,11 @@ Foydalanuvchi so'rovi:
             clean = re.sub(r"\s*```$", "", clean).strip()
             data = json.loads(clean)
             if isinstance(data, dict):
-                logger.info(f"🤖 AI aniqladi: '{user_query}' -> {data}")
-                return data
+                title_uz = _clean_ai_title(data.get("title_uz", ""))
+                title_en = _clean_ai_title(data.get("title_en", ""))
+                res = {"title_uz": title_uz, "title_en": title_en}
+                logger.info(f"🤖 AI aniqladi: '{user_query}' -> {res}")
+                return res
         except Exception:
             pass
 
@@ -90,7 +105,7 @@ Foydalanuvchi so'rovi:
     if raw_ans:
         lines = [line.strip(' \t\r"*-\'') for line in raw_ans.splitlines() if line.strip(' \t\r"*-')]
         clean_ans = lines[-1] if lines else raw_ans
-        clean_ans = clean_ans.strip(' "\'«»\n.').replace("Kino nomi:", "").strip()
+        clean_ans = _clean_ai_title(clean_ans)
         logger.info(f"🤖 AI aniqladi (raw): '{user_query}' -> '{clean_ans}'")
         return {"title_uz": clean_ans, "title_en": clean_ans}
 

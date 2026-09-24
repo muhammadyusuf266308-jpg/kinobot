@@ -68,16 +68,26 @@ def clean_query(text: str) -> str:
             rf"^[!/]?{re.escape(word)}\s*[:,\-]?\s*", "", t, flags=re.IGNORECASE
         ).strip()
     endings = [
-        r"\s+borm[ia]\??$", r"\s+bormi\??$", r"\s+kinosi\??$",
-        r"\s+filmini?\??$", r"\s+seriali?\??$", r"\?+$",
+        r"\s+borm[ia]\s+kanalda\??$",
+        r"\s+kanalda\??$",
+        r"\s+kino\s+borm[ia]\??$",
+        r"\s+film\s+borm[ia]\??$",
+        r"\s+borm[ia]\??$",
+        r"\s+kinosi\??$",
+        r"\s+filmini?\??$",
+        r"\s+seriali?\??$",
+        r"\?+$",
         r"\s+o'?sha\s+kinoni?\s+topib\s+ber\??$",
         r"\s+o'?sha\s+kino\s+i\s+topib\s+ber\??$",
         r"\s+kinoni?\s+topib\s+ber\??$",
         r"\s+topib\s+ber\??$",
         r"\s+iltimos\??$",
+        r"\s+kino\??$",
+        r"\s+film\??$",
     ]
-    for end in endings:
-        t = re.sub(end, "", t, flags=re.IGNORECASE).strip()
+    for _ in range(3):
+        for end in endings:
+            t = re.sub(end, "", t, flags=re.IGNORECASE).strip()
     return t or text.strip()
 
 
@@ -445,6 +455,22 @@ async def _handle_instagram(ctx, msg, text, user, chat):
         logger.error(f"Instagram → user: {e}")
 
 
+def _search_ai_title(raw_title: str) -> tuple[list[dict], str | None]:
+    if not raw_title:
+        return [], None
+    # 1. To'g'ridan-to'g'ri qidiruv
+    res = search_movie(raw_title)
+    if res:
+        return res, raw_title
+    # 2. Agar sarlavhada qavs, yoki, / bo'lsa (masalan "Men ajdarmon (yoki Malika va ajdarho)")
+    variants = [p.strip(' ()"\'') for p in re.split(r'\(yoki|\byoki\b|\bor\b|/|\)', raw_title) if len(p.strip(' ()"\'')) >= 3]
+    for v in variants:
+        res_v = search_movie(v)
+        if res_v:
+            return res_v, v
+    return [], None
+
+
 async def _handle_search(ctx, msg, text, user, chat, is_explicit: bool = True, is_kinochi: bool = False):
     query   = clean_query(text)
     results = []
@@ -457,19 +483,13 @@ async def _handle_search(ctx, msg, text, user, chat, is_explicit: bool = True, i
             if ai_data and isinstance(ai_data, dict):
                 title_uz = ai_data.get("title_uz")
                 if title_uz:
-                    results = search_movie(title_uz)
-                    if results:
-                        ai_suggested_title = title_uz
+                    results, ai_suggested_title = _search_ai_title(title_uz)
                 if not results:
                     title_en = ai_data.get("title_en")
                     if title_en:
-                        results = search_movie(title_en)
-                        if results:
-                            ai_suggested_title = title_en
+                        results, ai_suggested_title = _search_ai_title(title_en)
             elif isinstance(ai_data, str) and ai_data:
-                results = search_movie(ai_data)
-                if results:
-                    ai_suggested_title = ai_data
+                results, ai_suggested_title = _search_ai_title(ai_data)
         except Exception as e:
             logger.warning(f"AI kinochi qidiruv xatosi: {e}")
     else:
@@ -483,19 +503,13 @@ async def _handle_search(ctx, msg, text, user, chat, is_explicit: bool = True, i
                 if ai_data and isinstance(ai_data, dict):
                     title_uz = ai_data.get("title_uz")
                     if title_uz:
-                        results = search_movie(title_uz)
-                        if results:
-                            ai_suggested_title = title_uz
+                        results, ai_suggested_title = _search_ai_title(title_uz)
                     if not results:
                         title_en = ai_data.get("title_en")
                         if title_en:
-                            results = search_movie(title_en)
-                            if results:
-                                ai_suggested_title = title_en
+                            results, ai_suggested_title = _search_ai_title(title_en)
                 elif isinstance(ai_data, str) and ai_data:
-                    results = search_movie(ai_data)
-                    if results:
-                        ai_suggested_title = ai_data
+                    results, ai_suggested_title = _search_ai_title(ai_data)
             except Exception as e:
                 logger.warning(f"AI qidiruv xatosi: {e}")
 
@@ -668,14 +682,26 @@ async def cmd_cleansync(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def cmd_sync(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
-    await update.message.reply_html(
-        "ℹ️ <b>Kanal tarixini sinxronlash:</b>\n\n"
-        "Telegram xavfsizlik qoidasiga ko'ra botlar tarixni bevosita o'qiy olmaydi.\n"
-        "Tarixni 1 marta yuklab olish uchun kompyuterda quyidagini ishga tushiring:\n"
-        "<code>cd D:\\kino-bot-prod</code>\n"
-        "<code>python sync_local.py</code>\n\n"
-        "⚡ <i>Bundan keyin kanalga tashlanadigan yangi postlarni botning o'zi avtomatik qabul qilib saqlab ketaveradi!</i>"
-    )
+    msg = await update.message.reply_html("🔄 <b>Kanal va baza holati tekshirilmoqda...</b>")
+    try:
+        movies = get_all_movies()
+        total_count = len(movies)
+        latest = movies[:5]
+        latest_text = ""
+        for idx, m in enumerate(latest, 1):
+            latest_text += f"  {idx}. 🎬 <b>{m['title']}</b>  👉  <code>{m['bot_code']}</code>\n"
+
+        status_text = (
+            f"✅ <b>Kanal va Baza holati tekshirildi!</b>\n\n"
+            f"📢 <b>Kanal:</b> {CHANNEL_ID}\n"
+            f"🎬 <b>Bazada saqlangan jami kinolar:</b> <b>{total_count} ta</b>\n"
+            f"⚡ <b>Avtomatik post qabul qilish:</b> 🟢 <b>FAOL</b>\n\n"
+            f"🆕 <b>Oxirgi saqlangan kinolar:</b>\n{latest_text}\n"
+            f"💡 <i>Kanalga yangi kino posti tashlansa, bot uni avtomatik qabul qilib bazaga qo'shadi!</i>"
+        )
+        await msg.edit_text(status_text, parse_mode=ParseMode.HTML)
+    except Exception as e:
+        await msg.edit_text(f"❌ Xatolik yuz berdi: {e}")
 
 
 async def cmd_listmovies(update: Update, ctx: ContextTypes.DEFAULT_TYPE):

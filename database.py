@@ -40,6 +40,32 @@ def normalize_title(text: str) -> str:
     return re.sub(r"\s+", " ", t).strip().lower()
 
 
+_STOP_WORDS = {"va", "bilan", "haqida", "kino", "film", "uchun", "degan", "dagi"}
+
+
+def words_score(query: str, title: str) -> float:
+    """
+    Ikkita kino nomi o'rtasidagi so'zlar o'xshashlik foizini hisoblaydi.
+    Masalan: 'Ajdarho va malika' va 'Malika va Ajdar' -> 1.0 (100%)
+    'Tor' va 'Restorant haqidagi kinoga' -> 0.0
+    """
+    norm_q = normalize_title(query)
+    norm_t = normalize_title(title)
+    q_words = [w for w in norm_q.split() if len(w) >= 3 and w not in _STOP_WORDS]
+    t_words = [w for w in norm_t.split() if len(w) >= 3 and w not in _STOP_WORDS]
+    if not q_words or not t_words:
+        return 0.0
+
+    def word_similar(w1, w2):
+        if w1 == w2:
+            return True
+        min_len = min(len(w1), len(w2))
+        return min_len >= 4 and (w1.startswith(w2[:4]) or w2.startswith(w1[:4]))
+
+    matched = sum(1 for qw in q_words if any(word_similar(qw, tw) for tw in t_words))
+    return matched / len(q_words)
+
+
 def _is_whole_word_match(query: str, title: str) -> bool:
     """
     Qidirilayotgan so'z yoki ibora kino nomida mustaqil so'z sifatida qatnashganligini tekshiradi.
@@ -97,11 +123,12 @@ def search_movie(query: str) -> list[dict]:
         logger.error(f"Qidiruv xatosi (title): {e}")
 
     # Agar qidiruv bir nechta so'zdan iborat bo'lsa va hali topilmagan bo'lsa:
-    words = [w for w in norm_q.split() if len(w) >= 3]
+    words = [w for w in norm_q.split() if len(w) >= 3 and w not in _STOP_WORDS]
     if len(raw_candidates) < 5 and words:
-        for w in words[:2]:
+        for w in words[:3]:
+            stem = w[:5] if len(w) >= 5 else w
             try:
-                res_w = client.table("movies").select("*").ilike("title", f"%{w}%").limit(15).execute()
+                res_w = client.table("movies").select("*").or_(f"title.ilike.%{stem}%,title_ru.ilike.%{stem}%,title_en.ilike.%{stem}%").limit(15).execute()
                 for r in (res_w.data or []):
                     if not any(x["id"] == r["id"] for x in raw_candidates):
                         raw_candidates.append(r)
@@ -113,7 +140,7 @@ def search_movie(query: str) -> list[dict]:
 
     # 3. FILTRLASH VA SARALASH:
     exact_matches = []      # Nom qidiruvga aynan teng bo'lsa (masalan "Tor" == "Tor")
-    whole_word_matches = [] # Butun so'z sifatida qatnashgan bo'lsa ("Tor: Sevgi va...")
+    whole_word_matches = [] # Butun so'z yoki so'zlar tarkibi mos kelsa ("Malika va Ajdar" == "Ajdarho va malika")
     partial_matches = []    # Faqat 5+ harfli so'zlarda qisman moslik ("Titanik" -> "Titanik 2")
 
     for m in raw_candidates:
@@ -122,7 +149,7 @@ def search_movie(query: str) -> list[dict]:
 
         if norm_t == norm_q:
             exact_matches.append(m)
-        elif _is_whole_word_match(query_clean, title):
+        elif _is_whole_word_match(query_clean, title) or words_score(query_clean, title) >= 0.6:
             whole_word_matches.append(m)
         elif len(norm_q) >= 5 and norm_q in norm_t:
             partial_matches.append(m)
