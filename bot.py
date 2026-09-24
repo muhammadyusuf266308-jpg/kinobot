@@ -70,10 +70,46 @@ def clean_query(text: str) -> str:
     endings = [
         r"\s+borm[ia]\??$", r"\s+bormi\??$", r"\s+kinosi\??$",
         r"\s+filmini?\??$", r"\s+seriali?\??$", r"\?+$",
+        r"\s+o'?sha\s+kinoni?\s+topib\s+ber\??$",
+        r"\s+o'?sha\s+kino\s+i\s+topib\s+ber\??$",
+        r"\s+kinoni?\s+topib\s+ber\??$",
+        r"\s+topib\s+ber\??$",
+        r"\s+iltimos\??$",
     ]
     for end in endings:
         t = re.sub(end, "", t, flags=re.IGNORECASE).strip()
     return t or text.strip()
+
+
+def format_multiple_movies(results: list[dict], query: str, ai_suggested_title: str = None) -> tuple[str, InlineKeyboardMarkup]:
+    """Bir nechta kino topilganda chiroyli ro'yxat va tugmalar yaratadi"""
+    lines = []
+    if ai_suggested_title:
+        lines.append(f"🤖 <i>AI aniqlagan kino: <b>{ai_suggested_title}</b></i>\n")
+
+    lines.append(f"🔎 <b>«{query}» bo'yicha {len(results)} ta kino topildi:</b>\n")
+
+    buttons = []
+    for idx, m in enumerate(results[:6], 1):
+        title = m.get("title", "Nomsiz")
+        code = m.get("bot_code", "")
+        code_clean = re.sub(r"[^\d]", "", code)
+        year_str = f" ({m['year']})" if m.get("year") else ""
+
+        lines.append(f"<b>{idx}. 🎬 {title}{year_str}</b>  👉  <code>{code}</code>")
+
+        bot_url = f"https://t.me/{BOT_USERNAME}?start={code_clean}" if code_clean else f"https://t.me/{BOT_USERNAME}"
+        btn_text = f"🤖 {idx}. {title[:20]} ({code})"
+        row = [InlineKeyboardButton(btn_text, url=bot_url)]
+
+        if m.get("channel_msg_id") and CHANNEL_ID:
+            uname = str(CHANNEL_ID).lstrip("@")
+            row.append(InlineKeyboardButton("📺 Post", url=f"https://t.me/{uname}/{m['channel_msg_id']}"))
+
+        buttons.append(row)
+
+    lines.append("\n<i>Kinoni botdan olish uchun kerakli tugmani bosing 👇</i>")
+    return "\n".join(lines), InlineKeyboardMarkup(buttons)
 
 
 def movie_card(m: dict) -> str:
@@ -348,6 +384,11 @@ async def on_user_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await _handle_instagram(ctx, msg, text, user, chat)
         return
 
+    # ── "kinochi ..." bilan boshlangan xabarlar (to'g'ridan-to'g'ri AI orqali kino topish) ──
+    is_kinochi = any(
+        text.lower().startswith(w) for w in ["kinochi", "/kinochi", "!kinochi"]
+    )
+
     # Guruhda bo'lsa, qachon qidirishi kerakligini tekshiramiz:
     is_explicit = True
     if not is_private:
@@ -356,7 +397,7 @@ async def on_user_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if msg.reply_to_message and msg.reply_to_message.from_user:
             is_reply_to_bot = (msg.reply_to_message.from_user.id == ctx.bot.id or msg.reply_to_message.from_user.is_bot)
         
-        # 2. Xabar kalit so'z bilan boshlangan bo'lsa (kino, film, /kino, !kino, kod...)
+        # 2. Xabar kalit so'z bilan boshlangan bo'lsa (kinochi, kino, film, /kino, !kino, kod...)
         starts_with_keyword = any(
             text.lower().startswith(word.lower()) or 
             text.lower().startswith(f"/{word.lower()}") or 
@@ -368,7 +409,7 @@ async def on_user_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         # 3. Bot zikr qilingan bo'lsa
         is_bot_mentioned = bool(ctx.bot.username and f"@{ctx.bot.username.lower()}" in text.lower())
 
-        is_explicit = bool(is_reply_to_bot or starts_with_keyword or is_pure_code or is_bot_mentioned)
+        is_explicit = bool(is_kinochi or is_reply_to_bot or starts_with_keyword or is_pure_code or is_bot_mentioned)
 
         # Agar ochiq qidiruv bo'lmasa, salom-alik yoki juda qisqa so'zlarni e'tiborsiz qoldiramiz
         clean_t = text.lower().strip()
@@ -380,7 +421,7 @@ async def on_user_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return
 
     # ── Kino qidirish ──
-    await _handle_search(ctx, msg, text, user, chat, is_explicit=is_explicit)
+    await _handle_search(ctx, msg, text, user, chat, is_explicit=is_explicit, is_kinochi=is_kinochi)
 
 
 async def _handle_instagram(ctx, msg, text, user, chat):
@@ -404,24 +445,21 @@ async def _handle_instagram(ctx, msg, text, user, chat):
         logger.error(f"Instagram → user: {e}")
 
 
-async def _handle_search(ctx, msg, text, user, chat, is_explicit: bool = True):
+async def _handle_search(ctx, msg, text, user, chat, is_explicit: bool = True, is_kinochi: bool = False):
     query   = clean_query(text)
-    results = search_movie(query)
-
-    # Agar oddiy qidiruvda topilmasa, AI dan syujet/nom bo'yicha so'raymiz
+    results = []
     ai_suggested_title = None
-    if not results and len(query) >= 4:
+
+    if is_kinochi:
+        # 1. Foydalanuvchi "kinochi ..." deb yozganda: TO'G'RIDAN-TO'G'RI AI ga yuboramiz!
         try:
             ai_data = ask_ai_for_movie_title(query)
             if ai_data and isinstance(ai_data, dict):
-                # 1. Avval o'zbekcha nomi bo'yicha qidiramiz
                 title_uz = ai_data.get("title_uz")
                 if title_uz:
                     results = search_movie(title_uz)
                     if results:
                         ai_suggested_title = title_uz
-
-                # 2. Agar topilmasa inglizcha nomi bo'yicha qidiramiz
                 if not results:
                     title_en = ai_data.get("title_en")
                     if title_en:
@@ -433,31 +471,57 @@ async def _handle_search(ctx, msg, text, user, chat, is_explicit: bool = True):
                 if results:
                     ai_suggested_title = ai_data
         except Exception as e:
-            logger.warning(f"AI qidiruv xatosi: {e}")
+            logger.warning(f"AI kinochi qidiruv xatosi: {e}")
+    else:
+        # 2. Oddiy so'rovda ("kino tor", "qasoskorlar"...): AVVAL BAZADAN QIDIRILADI!
+        results = search_movie(query)
+
+        # Agar bazada TOPILMASA, faqat shundagina AI ga murojaat qilinadi!
+        if not results and len(query) >= 4 and is_explicit:
+            try:
+                ai_data = ask_ai_for_movie_title(query)
+                if ai_data and isinstance(ai_data, dict):
+                    title_uz = ai_data.get("title_uz")
+                    if title_uz:
+                        results = search_movie(title_uz)
+                        if results:
+                            ai_suggested_title = title_uz
+                    if not results:
+                        title_en = ai_data.get("title_en")
+                        if title_en:
+                            results = search_movie(title_en)
+                            if results:
+                                ai_suggested_title = title_en
+                elif isinstance(ai_data, str) and ai_data:
+                    results = search_movie(ai_data)
+                    if results:
+                        ai_suggested_title = ai_data
+            except Exception as e:
+                logger.warning(f"AI qidiruv xatosi: {e}")
 
     if results:
         log_search(user.id, user.username, user.full_name, query, True)
-        m = results[0]
 
-        # Tugmalar: Botga o'tish (kod bilan) va Kanalga o'tish
-        buttons = []
-        
-        # 1. Botga o'tish tugmasi (bosganda to'g'ridan-to'g'ri kod bilan bot ochiladi)
-        code_clean = re.sub(r"[^\d]", "", m.get("bot_code", ""))
-        bot_url = f"https://t.me/{BOT_USERNAME}?start={code_clean}" if code_clean else f"https://t.me/{BOT_USERNAME}"
-        buttons.append([InlineKeyboardButton("🤖 Kinoni botdan olish", url=bot_url)])
+        # Agar 1 ta kino topilsa — to'liq kartochka chiqaramiz
+        if len(results) == 1:
+            m = results[0]
+            buttons = []
+            code_clean = re.sub(r"[^\d]", "", m.get("bot_code", ""))
+            bot_url = f"https://t.me/{BOT_USERNAME}?start={code_clean}" if code_clean else f"https://t.me/{BOT_USERNAME}"
+            buttons.append([InlineKeyboardButton("🤖 Kinoni botdan olish", url=bot_url)])
 
-        # 2. Kanalga o'tish tugmasi (agar kanal xabar ID bo'lsa)
-        if m.get("channel_msg_id") and CHANNEL_ID:
-            uname = str(CHANNEL_ID).lstrip("@")
-            url   = f"https://t.me/{uname}/{m['channel_msg_id']}"
-            buttons.append([InlineKeyboardButton("📺 Kanaldagi postni ko'rish", url=url)])
+            if m.get("channel_msg_id") and CHANNEL_ID:
+                uname = str(CHANNEL_ID).lstrip("@")
+                url   = f"https://t.me/{uname}/{m['channel_msg_id']}"
+                buttons.append([InlineKeyboardButton("📺 Kanaldagi postni ko'rish", url=url)])
 
-        keyboard = InlineKeyboardMarkup(buttons)
-
-        reply_text = movie_card(m)
-        if ai_suggested_title:
-            reply_text = f"🤖 <i>AI aniqlagan kino: <b>{ai_suggested_title}</b></i>\n\n" + reply_text
+            keyboard = InlineKeyboardMarkup(buttons)
+            reply_text = movie_card(m)
+            if ai_suggested_title:
+                reply_text = f"🤖 <i>AI aniqlagan kino: <b>{ai_suggested_title}</b></i>\n\n" + reply_text
+        else:
+            # Agar bir nechta kino topilsa — barchasini tugmali ro'yxat qilib chiqaramiz!
+            reply_text, keyboard = format_multiple_movies(results, query, ai_suggested_title)
 
         try:
             await msg.reply_html(

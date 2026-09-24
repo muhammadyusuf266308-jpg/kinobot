@@ -85,8 +85,10 @@ def search_movie(query: str) -> list[dict]:
             pass
 
     # 2. Supabase dan nomida shu harflar qatnashgan kinolarni tortib olamiz
+    # Apostroflarning barcha turlarini (' ` ʻ ʼ ’) SQL '_' belgisi orqali qamrab olamiz
     norm_q = normalize_title(query_clean)
-    q = f"%{query_clean}%"
+    sql_q = re.sub(r"[`ʻʼ’']", "_", query_clean)
+    q = f"%{sql_q}%"
     raw_candidates = []
     try:
         res = client.table("movies").select("*").or_(f"title.ilike.{q},title_ru.ilike.{q},title_en.ilike.{q}").order("year", desc=True).limit(25).execute()

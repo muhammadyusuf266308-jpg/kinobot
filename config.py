@@ -28,7 +28,7 @@ SUPABASE_KEY = os.environ["SUPABASE_KEY"]   # secret key ishlatamiz
 
 # ── Qidiruv ──────────────────────────────────────────────────
 TRIGGER_WORDS = [
-    "kino", "film", "movie", "serial", "qidir",
+    "kinochi", "kino", "film", "movie", "serial", "qidir",
     "🎬", "🎥", "📽", "🍿",
 ]
 MIN_QUERY_LENGTH = 2
