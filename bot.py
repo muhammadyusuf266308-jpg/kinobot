@@ -25,6 +25,7 @@ from database import (
     get_client
 )
 from channel_parser import parse_post, parse_post_multiple
+from ai_service import ask_ai_for_movie_title
 
 # ─── Logging ─────────────────────────────────────────────────
 logging.basicConfig(
@@ -397,6 +398,18 @@ async def _handle_search(ctx, msg, text, user, chat):
     query   = clean_query(text)
     results = search_movie(query)
 
+    # Agar oddiy qidiruvda topilmasa, AI dan syujet/nom bo'yicha so'raymiz
+    ai_suggested_title = None
+    if not results and len(query) >= 4:
+        try:
+            ai_title = ask_ai_for_movie_title(query)
+            if ai_title and ai_title.lower() != query.lower():
+                results = search_movie(ai_title)
+                if results:
+                    ai_suggested_title = ai_title
+        except Exception as e:
+            logger.warning(f"AI qidiruv xatosi: {e}")
+
     if results:
         log_search(user.id, user.username, user.full_name, query, True)
         m = results[0]
@@ -417,9 +430,13 @@ async def _handle_search(ctx, msg, text, user, chat):
 
         keyboard = InlineKeyboardMarkup(buttons)
 
+        reply_text = movie_card(m)
+        if ai_suggested_title:
+            reply_text = f"🤖 <i>AI aniqlagan kino: <b>{ai_suggested_title}</b></i>\n\n" + reply_text
+
         try:
             await msg.reply_html(
-                movie_card(m),
+                reply_text,
                 reply_markup=keyboard,
                 disable_web_page_preview=True
             )
