@@ -854,6 +854,37 @@ async def cmd_deladmin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 #  GURUH VA SHAXSIY CHAT XABARLARI
 # ═══════════════════════════════════════════════════════════════
 
+def _search_ai_title(ai_res: dict | str) -> tuple[list[dict], str | None]:
+    """
+    AI aniqlagan kino nomlari (o'zbekcha, inglizcha, ruscha, muqobil nomlar) bo'yicha
+    bazadan kino qidiradi.
+    Topilgan kinolar ro'yxati va eng mos kelgan sarlavhani qaytaradi.
+    """
+    if isinstance(ai_res, str):
+        candidates = [ai_res]
+    elif isinstance(ai_res, dict):
+        candidates = []
+        for key in ["title_uz", "title_en", "title_ru"]:
+            val = ai_res.get(key)
+            if val and isinstance(val, str) and val.strip() and val.strip() not in candidates:
+                candidates.append(val.strip())
+        for alt in ai_res.get("alt_titles", []):
+            if alt and isinstance(alt, str) and alt.strip() and alt.strip() not in candidates:
+                candidates.append(alt.strip())
+    else:
+        return [], None
+
+    for cand in candidates:
+        cleaned = clean_query(cand)
+        if not cleaned:
+            continue
+        found = search_movie(cleaned)
+        if found:
+            return found, cand
+
+    return [], (candidates[0] if candidates else None)
+
+
 def is_channel_comment_or_discussion(msg) -> tuple[bool, str]:
     """Foydalanuvchi kanaldagi post ostiga komment (Reply) yozganligini aniqlaydi"""
     if not msg or not msg.reply_to_message:
