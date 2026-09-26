@@ -52,6 +52,16 @@ BOT_USERNAME = "UzKinoMov1eBot"   # @ siz
     ADD_MSG_ID
 ) = range(6)
 
+# ─── Admin Kanalga Post Yaratish holatlari (ConversationHandler) ─
+(
+    POST_TITLE,
+    POST_CODE,
+    POST_QUALITY,
+    POST_LANG,
+    POST_SOURCE,
+    POST_CONFIRM
+) = range(6, 12)
+
 
 # ─── Yordamchilar ────────────────────────────────────────────
 
@@ -164,7 +174,8 @@ def search_button() -> InlineKeyboardMarkup:
 def admin_keyboard() -> InlineKeyboardMarkup:
     """Admin uchun boshqaruv tugmalari"""
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("➕ Yangi kino qo'shish", callback_data="admin_add_movie")],
+        [InlineKeyboardButton("➕ Yangi kino qo'shish", callback_data="admin_add_movie"),
+         InlineKeyboardButton("📝 Kanalga post yaratish", callback_data="admin_create_post")],
         [InlineKeyboardButton("📊 Statistika", callback_data="admin_stats"),
          InlineKeyboardButton("📋 Kinolar ro'yxati", callback_data="admin_list")],
         [InlineKeyboardButton("📢 Guruhga qidiruv tugmasini yuborish", callback_data="admin_send_panel")]
@@ -471,6 +482,185 @@ async def add_movie_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data.clear()
     await update.message.reply_text("❌ Kino qo'shish bekor qilindi.")
     return ConversationHandler.END
+
+
+# ═══════════════════════════════════════════════════════════════
+#  ADMIN: KANALGA POST YARATISH (CONVERSATION)
+# ═══════════════════════════════════════════════════════════════
+
+def format_channel_post_text(data: dict) -> str:
+    """Kanal uchun chiroyli post matnini shakllantiradi"""
+    title = data.get("title", "")
+    code = data.get("code", "")
+    quality = data.get("quality", "1080p")
+    lang = data.get("lang", "O'zbek tilida")
+    source = data.get("source")
+
+    lines = [
+        f"🎬 <b>Nomi:</b> {title}",
+        f"🎙 <b>Tili:</b> {lang}",
+        f"💽 <b>Sifati:</b> {quality}",
+    ]
+    if source:
+        lines.append(f"🌐 <b>Manba:</b> {source}")
+
+    lines.extend([
+        "",
+        f"🆔 <b>Kino kodi:</b> <code>{code}</code>",
+        "",
+        f"🤖 <b>Botimiz:</b> @{BOT_USERNAME}",
+        f"📢 <b>Kanalimiz:</b> {CHANNEL_ID}",
+    ])
+    return "\n".join(lines)
+
+
+async def post_create_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Admin kanalga post yaratishni boshlaydi (/post yoki tugma)"""
+    user_id = update.effective_user.id
+    if user_id != ADMIN_ID:
+        return ConversationHandler.END
+
+    ctx.user_data["channel_post"] = {}
+    text = (
+        "📝 <b>Kanalga post yaratish</b>\n\n"
+        "1-qadam: <b>Kino nomini</b> kiriting:\n"
+        "<i>(Bekor qilish uchun /cancel deb yozing)</i>"
+    )
+    if update.callback_query:
+        await update.callback_query.message.reply_html(text)
+    else:
+        await update.message.reply_html(text)
+    return POST_TITLE
+
+
+async def post_create_title(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    ctx.user_data["channel_post"]["title"] = update.message.text.strip()
+    await update.message.reply_html(
+        "2-qadam: <b>Kino kodini</b> kiriting:\n"
+        "Masalan: <code>245</code> yoki <code>Kod:245</code>"
+    )
+    return POST_CODE
+
+
+async def post_create_code(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    code_raw = update.message.text.strip()
+    # Faqat raqam qilib yoki toza formatda olamiz
+    code_num = re.sub(r"[^\d]", "", code_raw)
+    ctx.user_data["channel_post"]["code"] = code_num or code_raw
+
+    await update.message.reply_html(
+        "3-qadam: <b>Kino sifatini</b> kiriting:\n"
+        "Masalan: <code>1080p</code>, <code>720p HD</code>\n"
+        "<i>(Standart 1080p qoldirish uchun <b>-</b> belgisini yuboring)</i>"
+    )
+    return POST_QUALITY
+
+
+async def post_create_quality(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    val = update.message.text.strip()
+    ctx.user_data["channel_post"]["quality"] = "1080p" if val == "-" else val
+
+    await update.message.reply_html(
+        "4-qadam: <b>Kino tilini</b> kiriting:\n"
+        "<i>(Standart <b>O'zbek tilida</b> qoldirish uchun <b>-</b> belgisini yuboring)</i>"
+    )
+    return POST_LANG
+
+
+async def post_create_lang(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    val = update.message.text.strip()
+    ctx.user_data["channel_post"]["lang"] = "O'zbek tilida" if val == "-" else val
+
+    await update.message.reply_html(
+        "5-qadam (oxirgi): <b>Manba</b> (sayt yoki kanal havolasi):\n"
+        "<i>(Agar manba qo'shishni istamasangiz <b>-</b> yoki <b>yo'q</b> deb yozing)</i>"
+    )
+    return POST_SOURCE
+
+
+async def post_create_source(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    val = update.message.text.strip()
+    if val.lower() in ["-", "yo'q", "yoq", "none", "no"]:
+        ctx.user_data["channel_post"]["source"] = None
+    else:
+        ctx.user_data["channel_post"]["source"] = val
+
+    p_data = ctx.user_data["channel_post"]
+    preview_text = format_channel_post_text(p_data)
+
+    confirm_keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🚀 Kanalga joylash", callback_data="post_send_channel")],
+        [InlineKeyboardButton("❌ Bekor qilish", callback_data="post_cancel")]
+    ])
+
+    await update.message.reply_html(
+        "👀 <b>Post ko'rinishi (Prevyu):</b>\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"{preview_text}\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        "Kanalga joylansinmi?",
+        reply_markup=confirm_keyboard,
+        disable_web_page_preview=True
+    )
+    return POST_CONFIRM
+
+
+async def post_create_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+
+    if q.data == "post_cancel":
+        ctx.user_data.clear()
+        await q.message.edit_text("❌ Post yaratish bekor qilindi.")
+        return ConversationHandler.END
+
+    if q.data == "post_send_channel":
+        p_data = ctx.user_data.get("channel_post", {})
+        if not p_data:
+            await q.message.edit_text("❌ Ma'lumot topilmadi.")
+            return ConversationHandler.END
+
+        post_text = format_channel_post_text(p_data)
+        try:
+            sent_msg = await ctx.bot.send_message(
+                chat_id=CHANNEL_ID,
+                text=post_text,
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True
+            )
+            # Post kanalga chiqdi, endi bot bazasiga ham avtomatik qo'shamiz!
+            try:
+                code_val = f"Kod:{p_data['code']}"
+                add_movie(
+                    title=p_data["title"],
+                    bot_code=code_val,
+                    genre=p_data.get("lang"),
+                    description=f"💽 Sifati: {p_data.get('quality')}",
+                    channel_msg_id=sent_msg.message_id
+                )
+            except Exception as e:
+                logger.warning(f"Post bazaga saqlashda xato: {e}")
+
+            await q.message.edit_text(
+                f"✅ <b>Post muvaffaqiyatli kanalga joylandi!</b>\n\n"
+                f"📢 Kanal: {CHANNEL_ID}\n"
+                f"🆔 Xabar ID: <code>{sent_msg.message_id}</code>\n"
+                f"🎬 Kino: <b>{p_data['title']}</b>",
+                parse_mode=ParseMode.HTML
+            )
+        except Exception as e:
+            logger.error(f"Kanalga post yuborishda xatolik: {e}")
+            await q.message.edit_text(f"❌ Kanalga post yuborib bo'lmadi:\n<code>{e}</code>", parse_mode=ParseMode.HTML)
+
+        ctx.user_data.clear()
+        return ConversationHandler.END
+
+
+async def post_create_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    ctx.user_data.clear()
+    await update.message.reply_text("❌ Post yaratish bekor qilindi.")
+    return ConversationHandler.END
+
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -836,6 +1026,7 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "👑 <b>Admin boshqaruv paneli</b>\n\n"
             "Kerakli bo'limni tanlang yoki buyruqlardan foydalaning:\n"
             "• /admin – Boshqaruv tugmalari\n"
+            "• /post – Kanalga yangi post yaratish\n"
             "• /addmovie – Yangi kino qo'shish\n"
             "• /listmovies – Barcha kinolar\n"
             "• /delmovie &lt;ID&gt; – Kinoni o'chirish\n"
@@ -1065,8 +1256,30 @@ def main():
     )
     app.add_handler(add_movie_handler)
 
+    # ── Admin Kanalga Post Yaratish ConversationHandler ──────
+    create_post_handler = ConversationHandler(
+        entry_points=[
+            CommandHandler("post", post_create_start),
+            CallbackQueryHandler(post_create_start, pattern="^admin_create_post$")
+        ],
+        states={
+            POST_TITLE:   [MessageHandler(filters.TEXT & ~filters.COMMAND, post_create_title)],
+            POST_CODE:    [MessageHandler(filters.TEXT & ~filters.COMMAND, post_create_code)],
+            POST_QUALITY: [MessageHandler(filters.TEXT & ~filters.COMMAND, post_create_quality)],
+            POST_LANG:    [MessageHandler(filters.TEXT & ~filters.COMMAND, post_create_lang)],
+            POST_SOURCE:  [MessageHandler(filters.TEXT & ~filters.COMMAND, post_create_source)],
+            POST_CONFIRM: [CallbackQueryHandler(post_create_confirm, pattern="^post_")],
+        },
+        fallbacks=[
+            CommandHandler("cancel", post_create_cancel),
+            CallbackQueryHandler(post_create_confirm, pattern="^post_cancel$")
+        ],
+    )
+    app.add_handler(create_post_handler)
+
     # ── Buyruqlar ────────────────────────────────────────────
     app.add_handler(CommandHandler("start",      cmd_start))
+    app.add_handler(CommandHandler("post",       post_create_start))
     app.add_handler(CommandHandler("admin",      cmd_admin))
     app.add_handler(CommandHandler("panel",      cmd_panel))
     app.add_handler(CommandHandler("sync",       cmd_sync))
