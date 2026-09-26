@@ -296,16 +296,19 @@ def search_movie(query: str) -> list[dict]:
     if final_results:
         return final_results[:5]
 
-    # 3. Agar keshdan hech narsa chiqmasa, Supabase dan to'g'ridan-to'g'ri ilike qidiruv
-    try:
-        client = get_client()
-        sql_q = re.sub(r"[`ʻʼ’']", "_", norm_q)
-        q = f"%{sql_q}%"
-        res = client.table("movies").select("*").or_(f"title.ilike.{q},title_ru.ilike.{q},title_en.ilike.{q}").order("year", desc=True).limit(5).execute()
-        return res.data or []
-    except Exception as e:
-        logger.error(f"Fallback Supabase search xatosi: {e}")
-        return []
+    # 3. Faqat kesh bo'sh bo'lgan holatdagina Supabase dan qidiramiz
+    if not all_movies:
+        try:
+            client = get_client()
+            sql_q = re.sub(r"[`ʻʼ’']", "_", norm_q)
+            q = f"%{sql_q}%"
+            res = client.table("movies").select("*").or_(f"title.ilike.{q},title_ru.ilike.{q},title_en.ilike.{q}").order("year", desc=True).limit(5).execute()
+            return res.data or []
+        except Exception as e:
+            logger.error(f"Fallback Supabase search xatosi: {e}")
+            return []
+
+    return []
 
 
 def add_movie(title: str, bot_code: str,

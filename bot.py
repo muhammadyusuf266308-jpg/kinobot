@@ -1581,6 +1581,7 @@ def main():
             ADD_MSG_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_movie_finish)],
         },
         fallbacks=[CommandHandler("cancel", add_movie_cancel)],
+        per_message=False,
     )
     app.add_handler(add_movie_handler)
 
@@ -1603,6 +1604,7 @@ def main():
             CommandHandler("cancel", post_create_cancel),
             CallbackQueryHandler(post_create_confirm, pattern="^post_cancel$")
         ],
+        per_message=False,
     )
     app.add_handler(create_post_handler)
 
@@ -1616,6 +1618,7 @@ def main():
             ADMIN_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_admin_process)],
         },
         fallbacks=[CommandHandler("cancel", add_admin_cancel)],
+        per_message=False,
     )
     app.add_handler(add_admin_handler)
 
