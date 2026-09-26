@@ -987,6 +987,9 @@ async def on_user_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not is_private and msg.reply_to_message and msg.reply_to_message.from_user:
         is_reply_to_bot = (msg.reply_to_message.from_user.id == ctx.bot.id or msg.reply_to_message.from_user.is_bot)
 
+    is_kinochi = any(
+        text.lower().startswith(w) for w in ["kinochi", "/kinochi", "!kinochi"]
+    )
     starts_with_keyword = any(
         text.lower().startswith(word.lower()) or 
         text.lower().startswith(f"/{word.lower()}") or 
