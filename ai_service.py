@@ -42,7 +42,7 @@ def _demote_model(model: str):
         logger.warning(f"⚠️ Model {model} muammoli bo'lgani sababli oxiriga surildi. Yangi tartib: {MODELS}")
 
 
-def _call_gemini(prompt: str, json_mode: bool = False, timeout: int = 7) -> str | None:
+def _call_gemini(prompt: str, json_mode: bool = False, timeout: int = 12) -> str | None:
     """Gemini API ga tezkor va adaptiv so'rov yuborish"""
     if not GEMINI_API_KEY:
         return None
@@ -154,6 +154,81 @@ Foydalanuvchi yozgan matn: "{user_query}"
     return None
 
 
+def ask_ai_universal(
+    user_message: str,
+    user_name: str = "Foydalanuvchi",
+    chat_title: str = None,
+    is_channel_comment: bool = False,
+    post_context: str = None
+) -> dict:
+    """
+    Har qanday savol, suhbat yoki kino so'rovini tahlil qiluvchi Universal AI:
+    1. Kino qidiruvi (syujet, tavsif, nom)
+    2. Tavsiya so'rovi (kayfiyat, janr)
+    3. Har qanday dunyoviy, kinoga oid, botga oid yoki erkin mavzudagi savol/suhbat
+    """
+    context_info = []
+    if chat_title:
+        context_info.append(f"Guruh/Chat: {chat_title}")
+    if is_channel_comment:
+        context_info.append("Holat: Kanal posti ostidagi kommentariya")
+    if post_context:
+        context_info.append(f"Post mazmuni: {post_context[:200]}")
+
+    ctx_str = "\n".join(context_info) if context_info else ""
+
+    prompt = f"""Sen kino kanali va botining universal va yuqori intellektli rasmiy AI yordamchisisan.
+Sen ham professional kino eksperti, ham foydalanuvchilarning HAR QANDAY savoliga (kino, aktyorlar, rejissorlar, dunyoqarash, faktlar, fan, salom-alik, botdan foydalanish, yordam) to'liq, muloyim, qiziqarli va o'zbek tilida javob bera oladigan bilimdon intellektsan.
+
+Foydalanuvchi xabarini tahlil qil va FAQAT quyidagi JSON formatida javob ber:
+
+1. Agar foydalanuvchi ma'lum bir KINONI qidirayotgan, nomini eslay olmay syujetini tasvirlayotgan bo'lsa:
+{{
+  "type": "movie_search",
+  "title_uz": "Kinoning o'zbekcha nomi",
+  "title_en": "Original inglizcha nomi",
+  "title_ru": "Ruscha nomi",
+  "year": 2024,
+  "alt_titles": ["Muqobil nom 1", "Muqobil nom 2"]
+}}
+
+2. Agar foydalanuvchi KINO TAVSIYASI so'rayotgan bo'lsa (masalan "qanaqa kino ko'ray", "dahshatli kino ayt", "zerikdim"):
+{{
+  "type": "recommendation",
+  "genre": "jangari",
+  "text": "Tavsiya sababi (1 jumla)"
+}}
+
+3. HAR QANDAY BOSHQA SAVOL, SUHBAT, MA'LUMOT SO'ROVI YOKI MUROJAAT BO'LSA:
+{{
+  "type": "chat",
+  "text": "Savolga to'liq, aniq, muloyim va foydali javob (Telegram HTML formatida, <b>, <i>, <code> teglaridan foydalanib yoz)"
+}}
+
+{ctx_str}
+Foydalanuvchi ismi: {user_name}
+Foydalanuvchi xabari: "{user_message}"
+"""
+
+    ans = _call_gemini(prompt, json_mode=True)
+    if ans:
+        try:
+            m = re.search(r'\{[\s\S]*\}', ans)
+            if m:
+                data = json.loads(m.group(0))
+                if isinstance(data, dict) and "type" in data:
+                    return data
+        except Exception as e:
+            logger.warning(f"Universal AI parse xatosi: {e}")
+
+    # Fallback
+    raw_chat = ask_ai_admin_assistant(user_message, user_name, chat_title, is_channel_comment, post_context)
+    if raw_chat:
+        return {"type": "chat", "text": raw_chat}
+
+    return {"type": "chat", "text": f"Assalomu alaykum, <b>{user_name}</b>! Sizga qanday yordam bera olaman? Kino nomi yoki kodini yozing, darhol topib beraman! 😊"}
+
+
 def ask_ai_admin_assistant(
     user_message: str,
     user_name: str = "Foydalanuvchi",
@@ -194,7 +269,7 @@ Foydalanuvchi xabari: "{user_message}"
 
 ADMIN JAVOBI:"""
 
-    ans = _call_gemini(prompt, timeout=6)
+    ans = _call_gemini(prompt)
     if ans:
         # Ortiqcha admin prefikslarini tozalash (faqat 'Admin:' yoki 'Javob:' kabi sarlavhalarni)
         ans = re.sub(r"(?i)^(?:admin|javob|uzkino ai)\s*[:*–-]+\s*", "", ans.strip())
