@@ -283,6 +283,93 @@ def get_stats() -> dict:
     }
 
 
+# ─── Admin boshqaruvi ──────────────────────────────────────────
+
+_ADMINS_FILE = "admins.json"
+
+
+def _load_local_admins() -> list[dict]:
+    import json, os
+    if os.path.exists(_ADMINS_FILE):
+        try:
+            with open(_ADMINS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return []
+    return []
+
+
+def _save_local_admins(admins: list[dict]):
+    import json
+    try:
+        with open(_ADMINS_FILE, "w", encoding="utf-8") as f:
+            json.dump(admins, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"Admins saqlash xatosi: {e}")
+
+
+def get_all_admins() -> list[dict]:
+    """Barcha adminlarni oladi (Supabase 'bot_admins' yoki mahalliy JSON)"""
+    client = get_client()
+    try:
+        res = client.table("bot_admins").select("*").order("id", desc=False).execute()
+        return res.data or []
+    except Exception:
+        return _load_local_admins()
+
+
+def is_user_admin(user_id: int, super_admin_id: int) -> bool:
+    """Foydalanuvchi super admin yoki qo'shimcha admin ekanligini tekshiradi"""
+    if user_id == super_admin_id:
+        return True
+    admins = get_all_admins()
+    return any(int(a.get("user_id", 0)) == int(user_id) for a in admins)
+
+
+def add_new_admin(user_id: int, username: str = None, full_name: str = None, added_by: int = None) -> bool:
+    """Yangi admin qo'shadi"""
+    client = get_client()
+    data = {
+        "user_id": user_id,
+        "username": username or "",
+        "full_name": full_name or "",
+        "added_by": added_by
+    }
+    # 1. Supabase urinishi
+    try:
+        res = client.table("bot_admins").upsert(data, on_conflict="user_id").execute()
+        if res.data:
+            return True
+    except Exception as e:
+        logger.warning(f"Supabase bot_admins ga yozib bo'lmadi, JSON ga saqlanadi: {e}")
+
+    # 2. Mahalliy JSON zaxira
+    local = _load_local_admins()
+    for a in local:
+        if int(a.get("user_id", 0)) == int(user_id):
+            a.update(data)
+            _save_local_admins(local)
+            return True
+    local.append(data)
+    _save_local_admins(local)
+    return True
+
+
+def remove_admin(user_id: int) -> bool:
+    """Adminni o'chiradi"""
+    client = get_client()
+    try:
+        client.table("bot_admins").delete().eq("user_id", user_id).execute()
+    except Exception:
+        pass
+
+    local = _load_local_admins()
+    new_local = [a for a in local if int(a.get("user_id", 0)) != int(user_id)]
+    _save_local_admins(new_local)
+    return True
+
+
+
 def get_random_movie() -> dict | None:
     """Tasodifiy bitta kino qaytaradi"""
     import random

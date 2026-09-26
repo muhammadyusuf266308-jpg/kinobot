@@ -23,7 +23,8 @@ from database import (
     init_db, search_movie, add_movie, log_search,
     get_all_movies, delete_movie, movie_exists_by_code, get_stats,
     get_client, get_random_movie, get_movies_by_genre, get_top_movies,
-    get_similar_movies, get_most_searched
+    get_similar_movies, get_most_searched, is_user_admin, add_new_admin,
+    get_all_admins, remove_admin
 )
 from channel_parser import parse_post, parse_post_multiple
 from ai_service import ask_ai_for_movie_title, parse_post_with_ai, ask_ai_recommend
@@ -61,6 +62,9 @@ BOT_USERNAME = "UzKinoMov1eBot"   # @ siz
     POST_SOURCE,
     POST_CONFIRM
 ) = range(6, 12)
+
+# ─── Yangi Admin Qo'shish holatlari (ConversationHandler) ─────
+ADMIN_INPUT = 12
 
 
 # ─── Yordamchilar ────────────────────────────────────────────
@@ -176,6 +180,8 @@ def admin_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("➕ Yangi kino qo'shish", callback_data="admin_add_movie"),
          InlineKeyboardButton("📝 Kanalga post yaratish", callback_data="admin_create_post")],
+        [InlineKeyboardButton("👥 Adminlar ro'yxati", callback_data="admin_list_admins"),
+         InlineKeyboardButton("👤 Yangi admin qo'shish", callback_data="admin_add_admin")],
         [InlineKeyboardButton("📊 Statistika", callback_data="admin_stats"),
          InlineKeyboardButton("📋 Kinolar ro'yxati", callback_data="admin_list")],
         [InlineKeyboardButton("📢 Guruhga qidiruv tugmasini yuborish", callback_data="admin_send_panel")]
@@ -321,7 +327,7 @@ async def on_callback_query(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     # Faqat admin uchun tugmalar
-    if q.from_user.id != ADMIN_ID:
+    if not is_user_admin(q.from_user.id, ADMIN_ID):
         return
 
     if data == "admin_stats":
@@ -347,6 +353,8 @@ async def on_callback_query(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if len(movies) > 20:
             text += f"\n... va yana {len(movies)-20} ta."
         await q.message.reply_html(text)
+    elif data == "admin_list_admins":
+        await cmd_admins(update, ctx)
     elif data == "admin_send_panel":
         if GROUP_ID:
             try:
@@ -660,6 +668,110 @@ async def post_create_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data.clear()
     await update.message.reply_text("❌ Post yaratish bekor qilindi.")
     return ConversationHandler.END
+
+
+# ═══════════════════════════════════════════════════════════════
+#  ADMIN: YANGI ADMIN QO'SHISH VA RO'YXAT (CONVERSATION)
+# ═══════════════════════════════════════════════════════════════
+
+async def add_admin_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Faqat bosh admin (ADMIN_ID) yangi admin qo'shishi mumkin"""
+    user_id = update.effective_user.id
+    if user_id != ADMIN_ID:
+        if update.callback_query:
+            await update.callback_query.answer("⛔ Faqat bosh admin yangi admin qo'sha oladi!", show_alert=True)
+        else:
+            await update.message.reply_text("⛔ Faqat bosh admin yangi admin qo'sha oladi!")
+        return ConversationHandler.END
+
+    text = (
+        "👤 <b>Yangi admin qo'shish</b>\n\n"
+        "Yangi admin bo'ladigan foydalanuvchining <b>Telegram ID raqamini</b> yuboring:\n"
+        "<i>(Masalan: <code>123456789</code>. Bekor qilish uchun /cancel deb yozing)</i>"
+    )
+    if update.callback_query:
+        await update.callback_query.message.reply_html(text)
+    else:
+        await update.message.reply_html(text)
+    return ADMIN_INPUT
+
+
+async def add_admin_process(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    val = update.message.text.strip()
+    digits = re.findall(r"\d+", val)
+    if not digits:
+        await update.message.reply_html("❌ Noto'g'ri ID. Iltimos faqat raqamlardan iborat Telegram ID kiriting:")
+        return ADMIN_INPUT
+
+    new_admin_id = int(digits[0])
+    if new_admin_id == ADMIN_ID:
+        await update.message.reply_html("ℹ️ Siz allaqachon bosh adminsiz.")
+        return ConversationHandler.END
+
+    success = add_new_admin(
+        user_id=new_admin_id,
+        added_by=update.effective_user.id
+    )
+    if success:
+        await update.message.reply_html(
+            f"✅ <b>Yangi admin muvaffaqiyatli qo'shildi!</b>\n\n"
+            f"👤 Admin ID: <code>{new_admin_id}</code>\n"
+            f"Endi bu foydalanuvchi botning barcha admin funksiyalaridan foydalana oladi."
+        )
+    else:
+        await update.message.reply_html("❌ Adminni qo'shishda xatolik yuz berdi.")
+    return ConversationHandler.END
+
+
+async def add_admin_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("❌ Yangi admin qo'shish bekor qilindi.")
+    return ConversationHandler.END
+
+
+async def cmd_admins(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Adminlar ro'yxatini ko'rish"""
+    user_id = update.effective_user.id
+    if not is_user_admin(user_id, ADMIN_ID):
+        return
+
+    admins = get_all_admins()
+    lines = [
+        "👥 <b>Bot Adminlari Ro'yxati:</b>\n",
+        f"👑 <b>Bosh admin:</b> <code>{ADMIN_ID}</code>"
+    ]
+    if admins:
+        lines.append("\n<b>Qo'shimcha adminlar:</b>")
+        for idx, a in enumerate(admins, 1):
+            uid = a.get("user_id")
+            uname = f" (@{a['username']})" if a.get("username") else ""
+            lines.append(f"{idx}. <code>{uid}</code>{uname}")
+    else:
+        lines.append("\n<i>Hozircha qo'shimcha adminlar yo'q.</i>")
+
+    lines.append("\n💡 <i>Adminni o'chirish: /deladmin &lt;ID&gt;</i>")
+    await update.effective_message.reply_html("\n".join(lines))
+
+
+async def cmd_deladmin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Adminni o'chirish (/deladmin <ID>)"""
+    user_id = update.effective_user.id
+    if user_id != ADMIN_ID:
+        await update.message.reply_text("⛔ Faqat bosh admin boshqa adminlarni o'chira oladi!")
+        return
+
+    args = ctx.args
+    if not args or not args[0].isdigit():
+        await update.message.reply_html("Ishlatish: <code>/deladmin 123456789</code>")
+        return
+
+    target_id = int(args[0])
+    if target_id == ADMIN_ID:
+        await update.message.reply_text("❌ Bosh adminni o'chirib bo'lmaydi!")
+        return
+
+    remove_admin(target_id)
+    await update.message.reply_html(f"✅ Admin (<code>{target_id}</code>) o'chirildi.")
+
 
 
 
@@ -1021,12 +1133,15 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-    if update.effective_user.id == ADMIN_ID:
+    if is_user_admin(update.effective_user.id, ADMIN_ID):
         await update.message.reply_html(
             "👑 <b>Admin boshqaruv paneli</b>\n\n"
             "Kerakli bo'limni tanlang yoki buyruqlardan foydalaning:\n"
             "• /admin – Boshqaruv tugmalari\n"
             "• /post – Kanalga yangi post yaratish\n"
+            "• /admins – Adminlar ro'yxati\n"
+            "• /addadmin – Yangi admin qo'shish\n"
+            "• /deladmin &lt;ID&gt; – Adminni o'chirish\n"
             "• /addmovie – Yangi kino qo'shish\n"
             "• /listmovies – Barcha kinolar\n"
             "• /delmovie &lt;ID&gt; – Kinoni o'chirish\n"
@@ -1045,7 +1160,7 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
+    if not is_user_admin(update.effective_user.id, ADMIN_ID):
         return
     await update.message.reply_html(
         "👑 <b>Admin boshqaruv paneli:</b>",
@@ -1054,7 +1169,7 @@ async def cmd_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_panel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
+    if not is_user_admin(update.effective_user.id, ADMIN_ID):
         return
     await update.message.reply_html(
         "🎬 <b>Kino qidirish</b>\n\n"
@@ -1084,7 +1199,7 @@ async def cmd_cleansync(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_sync(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
+    if not is_user_admin(update.effective_user.id, ADMIN_ID):
         return
     msg = await update.message.reply_html("🔄 <b>Kanal va baza holati tekshirilmoqda...</b>")
     try:
@@ -1109,7 +1224,7 @@ async def cmd_sync(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_listmovies(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
+    if not is_user_admin(update.effective_user.id, ADMIN_ID):
         return
     movies = get_all_movies()
     if not movies:
@@ -1125,7 +1240,7 @@ async def cmd_listmovies(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_delmovie(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
+    if not is_user_admin(update.effective_user.id, ADMIN_ID):
         return
     args = ctx.args
     if not args or not args[0].isdigit():
@@ -1138,7 +1253,7 @@ async def cmd_delmovie(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
+    if not is_user_admin(update.effective_user.id, ADMIN_ID):
         return
     s = get_stats()
     rate = f"{s['found_count']/s['total_searches']*100:.1f}%" if s["total_searches"] else "—"
@@ -1277,9 +1392,25 @@ def main():
     )
     app.add_handler(create_post_handler)
 
+    # ── Yangi Admin Qo'shish ConversationHandler ─────────────
+    add_admin_handler = ConversationHandler(
+        entry_points=[
+            CommandHandler("addadmin", add_admin_start),
+            CallbackQueryHandler(add_admin_start, pattern="^admin_add_admin$")
+        ],
+        states={
+            ADMIN_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_admin_process)],
+        },
+        fallbacks=[CommandHandler("cancel", add_admin_cancel)],
+    )
+    app.add_handler(add_admin_handler)
+
     # ── Buyruqlar ────────────────────────────────────────────
     app.add_handler(CommandHandler("start",      cmd_start))
     app.add_handler(CommandHandler("post",       post_create_start))
+    app.add_handler(CommandHandler("admins",     cmd_admins))
+    app.add_handler(CommandHandler("addadmin",   add_admin_start))
+    app.add_handler(CommandHandler("deladmin",   cmd_deladmin))
     app.add_handler(CommandHandler("admin",      cmd_admin))
     app.add_handler(CommandHandler("panel",      cmd_panel))
     app.add_handler(CommandHandler("sync",       cmd_sync))
