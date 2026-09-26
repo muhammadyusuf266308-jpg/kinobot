@@ -43,14 +43,6 @@ async def main():
                 continue
 
             movies_list = parse_post_multiple(text, message_id=message.id)
-            if not movies_list:
-                # Agar postda kod va raqam bo'lib, parser tuta olmagan bo'lsa, AI ga tekshirtiramiz
-                import re
-                if re.search(r"(?i)\bkod", text) and re.search(r"\d{2,5}", text):
-                    try:
-                        movies_list = parse_post_with_ai(text, message_id=message.id)
-                    except Exception:
-                        pass
 
             if not movies_list:
                 skipped += 1
@@ -69,9 +61,9 @@ async def main():
                         channel_msg_id=parsed["channel_msg_id"]
                     )
                     saved += 1
-                    print(f"  ✅ Saqlandi: {parsed['title']}  ->  {parsed['bot_code']}")
+                    print(f"  ✅ Saqlandi: {parsed['title']}  ->  {parsed['bot_code']}", flush=True)
                 except Exception as e:
-                    print(f"  ❌ Xato (#{message.id}): {e}")
+                    print(f"  ❌ Xato (#{message.id}): {e}", flush=True)
 
     print("\n" + "="*50)
     print(f"🎉 TUGADI!")

@@ -9,11 +9,13 @@ logger = logging.getLogger(__name__)
 
 _YEAR_RE = re.compile(r"\b(19|20)\d{2}\b")
 
-# Aniq kod qidiruv: "Kino kodi: 226", "Film kodi: 110", "Kino kodi; 214", "<<205>> kodini", "`110`"
+# Aniq kod qidiruv:
+# "Kino kodi: 226", "Film kodi: 110", "Kino kodi; 214", "<<205>> kodini", "`110`", "🆔 Film kodi: 244", "Kodi: 243", "Kod: 234"
 _KOD_PATTERNS = [
-    re.compile(r"(?i)(?:🔎\s*)?(?:kino|film)?\s*kod[iı]?\s*[:;\-–—]?\s*[`*\"']?\s*(\d{1,5})"),
-    re.compile(r"(?i)\bkod[iı]?\s*[:;\-–—]?\s*[`*\"']?\s*(\d{1,5})"),
+    re.compile(r"(?i)(?:🆔\s*|🔎\s*|🔰\s*|📌\s*)?(?:kino|film|kinolar|serial)?\s*k[io]d[iı]?\s*[:;\-–—]?\s*[`*\"'\s]*(\d{1,5})"),
+    re.compile(r"(?i)\bk[io]d[iı]?\s*[:;\-–—]?\s*[`*\"'\s]*(\d{1,5})"),
     re.compile(r"(?i)(?:<<|`|\b)(\d{1,5})(?:>>|`|\b)\s*(?:kodini|kodi|kod)"),
+    re.compile(r"(?i)\bcode\s*[:;\-–—]?\s*[`*\"'\s]*(\d{1,5})"),
 ]
 
 # Ro'yxat formati qatori: masalan "127 — 📺Tor" yoki "147 - Momaqaldiroqlar" yoki "№124. Qasoskorlar"
@@ -22,7 +24,7 @@ _LIST_LINE_RE = re.compile(r"^(?:№\s*)?(\d{1,5})\s*[\.\-—–:]\s*(.+)$")
 # Reklama va oddiy gaplarni aniqlovchi filtr (faqat aniq no-kino postlar uchun)
 _SPAM_KEYWORDS = [
     "kanal sotiladi", "open budget", "ovoz bering", "ovoz olamiz",
-    "aktiv bo", "uzur so", "arzonga bervoraman", "dangal oladiganlar"
+    "arzonga bervoraman", "dangal oladiganlar"
 ]
 
 _FIELD_RE = re.compile(
@@ -31,6 +33,18 @@ _FIELD_RE = re.compile(
     r"\U00002702-\U000027B0\U0001F1E0-\U0001F1FF\ufe0e\ufe0f]*\s*)?"
     r"([^:\n]{1,30}):\s*(.+)$"
 )
+
+# Sarlavha bo'la olmaydigan umumiy e'lon / chaqiruv iboralari
+_IGNORE_PHRASES = [
+    "ajoyib premyera", "premyera", "ko'rmagansiz", "kormagansiz",
+    "yangi kino yuklandi", "yangi kino", "bugun ko'rishga", "bugun korishga",
+    "kechga ko'rishga zo'r kino", "kechga korishga zor kino", "kechga koʻrishga zoʻr kino",
+    "mualiflik huquqi", "mualliflik huquqi", "kanalga joylamadik", "kutgan premyera", "barcha kutgan",
+    "botga joyladik", "botimizda",
+    "reaksiya bilan", "reaksiyani", "reaksiya yig'ib", "reaksiya yigʻib",
+    "sizga albatta yoqadi", "imdb da", "kinopoisk da",
+    "shu kinoni botga joyladik", "instagramni portlatgan kino",
+]
 
 
 def _clean_emojis(text: str) -> str:
@@ -48,6 +62,27 @@ def _clean_emojis(text: str) -> str:
 
 def _normalize_key(raw: str) -> str:
     return _clean_emojis(raw).lower()
+
+
+def _clean_title_candidate(title: str) -> str:
+    """Nomdan ortiqcha yuklandi, skachat, full hd, barcha qismlar, qavslarni chiroyli tozalaydi"""
+    if not title:
+        return ""
+    t = _clean_emojis(title).strip(". :–- ")
+    # Qo'shtirnoqlar bilan o'ralgan bo'lsa
+    q_match = re.search(r'["«“]([^"»”]+)["»”]', t)
+    if q_match and len(q_match.group(1).strip()) >= 3:
+        inside = q_match.group(1).strip()
+        if not any(bad in inside.lower() for bad in ["ajdar uyi ning", "sababli"]):
+            t = inside
+
+    # "Astral filmining (men topgan )barcha qismi" -> "Astral"
+    t = re.sub(r"(?i)\s*(?:filmining|filmi|kinoning|kino)?\s*(?:\([^)]*\)\s*)?barcha\s*qism[a-z]*.*", "", t)
+    # "Liger Uzbek tilida 2022 O'zbekcha tarjima film Full HD skachat" -> "Liger"
+    t = re.sub(r"(?i)\s+(?:uzbek|o['ʻʼ`]zbek|rus|ingliz|turk|koreys)?\s*(?:tilida|cha)?\s*(?:tarjima)?\s*(?:film|kino|serial)?\s*(?:full\s*hd|hd|skachat|yuklab\s*olish|onlayn|online|\d{4}).*", "", t)
+    t = re.sub(r"(?i)\s+(?:full\s*hd|hd|skachat|yuklab\s*olish|onlayn|online).*", "", t)
+    t = re.sub(r"(?i)\s+filmi\b", "", t)
+    return t.strip(". :–- ")
 
 
 def parse_post_multiple(text: str, message_id: int = None) -> list[dict]:
@@ -69,7 +104,8 @@ def parse_post_multiple(text: str, message_id: int = None) -> list[dict]:
         m = _LIST_LINE_RE.match(clean_l)
         if m:
             code_num = m.group(1).strip()
-            title = _clean_emojis(m.group(2)).strip(". :–- ")
+            raw_t = _clean_emojis(m.group(2)).strip(". :–- ")
+            title = _clean_title_candidate(raw_t)
             if title and len(title) > 1 and not any(skip in title.lower() for skip in ["botimiz", "kanalimiz", "http", "t.me"]):
                 list_items.append({
                     "title": title,
@@ -94,6 +130,7 @@ def parse_post_multiple(text: str, message_id: int = None) -> list[dict]:
 def parse_post(text: str, message_id: int = None) -> dict | None:
     """
     Bitta kino postini aniq tahlil qiladi.
+    Har xil post turlarini (Nomi: ..., 🎬 Kino, PREMYERA "Nom", Kodi: ...) to'liq taniydi.
     """
     if not text or len(text.strip()) < 8:
         return None
@@ -102,8 +139,8 @@ def parse_post(text: str, message_id: int = None) -> dict | None:
     text = re.sub(r"[*_`~]", "", text)
     lower_text = text.lower()
 
-    # 1. Qat'iy qoida: Post matnida "kod" yoki "kodi" so'zi bo'lishi SHART!
-    if "kod" not in lower_text and "kodi" not in lower_text:
+    # 1. Post matnida kod/kodi/kodini/code so'zi bo'lishi tekshiriladi
+    if not re.search(r"(?i)\b(?:k[io]d[a-z]*|code)\b|k[io]d[:;\-–—]", text):
         return None
 
     # Aniq spam/reklama bo'lsa rad etamiz
@@ -136,6 +173,7 @@ def parse_post(text: str, message_id: int = None) -> dict | None:
 
     extra = {}
     plain_candidates = []
+    quoted_candidates = []
 
     for line in raw_lines:
         line = line.strip()
@@ -146,56 +184,85 @@ def parse_post(text: str, message_id: int = None) -> dict | None:
             continue
 
         # Kod qatorining o'zini nom deb olmaslik
-        if re.search(r"(?i)(?:kino|film)?\s*kod[iı]?", line) or re.search(r"(?i)\bkod\b", line):
+        if re.search(r"(?i)(?:🆔\s*|🔎\s*|🔰\s*|📌\s*)?(?:kino|film|kinolar|serial)?\s*k[io]d[iı]?", line) or re.search(r"(?i)\bk[io]d\b", line):
             continue
 
-        m = _FIELD_RE.match(line)
-        # Agar key 2 tadan ko'p so'z bo'lsa (masalan: "O'rgimchak odam 4: Yangi kun"), bu meta-maydon emas, sarlavha!
-        if m and len(m.group(1).strip().split()) <= 2:
-            raw_key = m.group(1).strip()
-            val     = m.group(2).strip()
-            key     = _normalize_key(raw_key)
+        # Qo'shtirnoq ichidagi nom nomzodlari (masalan: "Malika va Ajdar")
+        q_matches = re.findall(r'["«“]([^"»”]{2,50})["»”]', line)
+        for qm in q_matches:
+            c_qm = _clean_emojis(qm).strip()
+            if c_qm and len(c_qm) >= 3 and not any(ign in c_qm.lower() for ign in ["ajdar uyi ning", "sababli", "kanalga"]):
+                quoted_candidates.append(c_qm)
 
-            if not key or any(k in key for k in ["kino nomi", "nomi", "film nomi", "title", "kino", "film"]):
-                if not result["title"]:
-                    clean_v = _clean_emojis(val).strip(". :–-")
+        m = _FIELD_RE.match(line)
+        # Agar bitta qatorda bir nechta maydon bo'lsa (masalan: "🎙 Til: O'zbek | 📅 Yil: 2024")
+        if "|" in line:
+            subparts = [p.strip() for p in line.split("|") if p.strip()]
+        else:
+            subparts = [line]
+
+        matched_field = False
+        for part in subparts:
+            mp = _FIELD_RE.match(part)
+            if mp and len(mp.group(1).strip().split()) <= 2:
+                raw_key = mp.group(1).strip()
+                val     = mp.group(2).strip()
+                key     = _normalize_key(raw_key)
+
+                if any(k in key for k in ["kinopoisk", "imdb", "reyting", "rating"]):
+                    extra["reyting"] = val
+                    matched_field = True
+                elif any(k in key for k in ["kino nomi", "serial nomi", "nomi", "film nomi", "title"]):
+                    clean_v = _clean_title_candidate(val)
                     if clean_v and len(clean_v) > 1 and not any(skip in clean_v.lower() for skip in ["botimiz", "kanalimiz", "http"]):
                         result["title"] = clean_v
-            elif any(k in key for k in ["yili", "yil", "sanasi", "sana", "year"]):
-                yr = _YEAR_RE.search(val)
-                if yr:
-                    result["year"] = int(yr.group())
-            elif any(k in key for k in ["tili", "til", "tilida", "tarjima", "dub"]):
-                extra["tili"] = val
-            elif any(k in key for k in ["janri", "janr", "genre"]):
-                extra["janri"] = val
-            elif any(k in key for k in ["sifati", "sifat", "farmati", "formati"]):
-                extra["sifat"] = val
-            elif any(k in key for k in ["davlati", "davlat", "mamlakat", "country"]):
-                extra["davlat"] = val
-            elif any(k in key for k in ["reyting", "rating", "imdb", "kinopoisk"]):
-                extra["reyting"] = val
+                    matched_field = True
+                elif any(k in key for k in ["yili", "yil", "sanasi", "sana", "year"]):
+                    yr = _YEAR_RE.search(val)
+                    if yr:
+                        result["year"] = int(yr.group())
+                    matched_field = True
+                elif any(k in key for k in ["tili", "til", "tilida", "tarjima", "dub"]):
+                    extra["tili"] = val
+                    matched_field = True
+                elif any(k in key for k in ["janri", "janr", "genre"]):
+                    extra["janri"] = val
+                    matched_field = True
+                elif any(k in key for k in ["sifati", "sifat", "farmati", "formati"]):
+                    extra["sifat"] = val
+                    matched_field = True
+                elif any(k in key for k in ["davlati", "davlat", "mamlakat", "country"]):
+                    extra["davlat"] = val
+                    matched_field = True
+
+        if matched_field:
             continue
 
         clean = _clean_emojis(line)
         if clean and len(clean) > 2 and not clean.startswith("@"):
-            # Sarlavha yoki reklama so'zlari bo'lmasa nom nomzodi sifatida olamiz
             c_low = clean.lower()
-            if not any(skip in c_low for skip in [
-                "ajoyib premyera", "premyera", "ko'rmagansiz", "kormagansiz",
-                "yangi kino yuklandi", "yangi kino", "bugun ko'rishga", "bugun korishga",
-                "mualiflik huquqi", "kanalga joylamadik", "kutgan premyera", "barcha kutgan",
-                "barcha qismlari", "hamma qismlari"
-            ]):
+            if not any(skip in c_low for skip in _IGNORE_PHRASES):
                 plain_candidates.append(clean)
 
-    if not result["title"] and plain_candidates:
-        result["title"] = plain_candidates[0]
+    # Agar explicit nomi maydoni bo'lmasa:
+    if not result["title"]:
+        # 1. Qo'shtirnoq ichidagi nom bo'lsa
+        if quoted_candidates:
+            result["title"] = _clean_title_candidate(quoted_candidates[0])
+        # 2. Oddiy toza qatorlardan qidiramiz
+        elif plain_candidates:
+            result["title"] = _clean_title_candidate(plain_candidates[0])
 
     if not result["title"]:
         return None
 
-    result["title"] = result["title"].strip(". :–-")
+    result["title"] = _clean_title_candidate(result["title"])
+
+    # Agar nom ichida yil bo'lsa va year hali belgilanmagan bo'lsa, yilni ajratib olamiz
+    if not result["year"]:
+        yr_m = _YEAR_RE.search(result["title"])
+        if yr_m:
+            result["year"] = int(yr_m.group())
 
     genres = []
     if extra.get("tili"):

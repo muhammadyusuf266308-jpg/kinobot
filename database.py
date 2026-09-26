@@ -296,18 +296,46 @@ def get_random_movie() -> dict | None:
         return None
 
 
+GENRE_SYNONYMS = {
+    "horror": ["horror", "ujas", "daxshat", "dahshat", "qorqinchli", "qo'rqinchli", "qõrqinchli"],
+    "dahshat": ["horror", "ujas", "daxshat", "dahshat", "qorqinchli", "qo'rqinchli", "qõrqinchli"],
+    "jangari": ["jangari", "boevik", "action"],
+    "fantastika": ["fantastik", "fentezi", "fantasy", "sci-fi"],
+    "komediya": ["komedi", "kamedi", "comedy"],
+    "multfilm": ["mult", "animatsiya", "animation", "ertak"],
+    "sevgi": ["sevgi", "romantik", "ramantik", "melodrama"],
+    "triller": ["triller", "thriller", "detektiv"],
+    "tarix": ["tarix", "tarixiy", "biografiya", "harbiy"],
+    "oilaviy": ["oilaviy", "sarguzasht"],
+    "drama": ["drama", "dramma"],
+}
+
+
 def get_movies_by_genre(genre_keyword: str, limit: int = 8) -> list[dict]:
-    """Janr bo'yicha kinolarni qaytaradi"""
+    """Janr bo'yicha kinolarni kengaytirilgan sinonimlar bilan qaytaradi"""
     client = get_client()
+    kw_clean = genre_keyword.strip().lower()
+    search_terms = GENRE_SYNONYMS.get(kw_clean, [kw_clean])
+
+    results = []
+    seen = set()
     try:
-        res = (
-            client.table("movies")
-            .select("*")
-            .ilike("genre", f"%{genre_keyword}%")
-            .limit(limit)
-            .execute()
-        )
-        return res.data or []
+        # Har bir sinonim bo'yicha qidirib, birlashtiramiz
+        for term in search_terms:
+            res = (
+                client.table("movies")
+                .select("*")
+                .ilike("genre", f"%{term}%")
+                .limit(limit)
+                .execute()
+            )
+            for m in (res.data or []):
+                if m["id"] not in seen:
+                    seen.add(m["id"])
+                    results.append(m)
+            if len(results) >= limit:
+                break
+        return results[:limit]
     except Exception as e:
         logger.error(f"get_movies_by_genre xatosi: {e}")
         return []
@@ -370,9 +398,23 @@ def get_similar_movies(movie_id: int, genre: str = None, title: str = None, limi
     seen = set()
     unique = []
     for r in results:
-        if r["id"] not in seen:
+        if r["id"] not in seen and r["id"] != movie_id:
             seen.add(r["id"])
             unique.append(r)
+
+    # Agar o'xshash topilmasa, bazadagi boshqa mashhur kinolardan to'ldiramiz
+    if len(unique) < limit:
+        try:
+            fallbacks = get_top_movies(limit + 5)
+            for fb in fallbacks:
+                if fb["id"] not in seen and fb["id"] != movie_id:
+                    seen.add(fb["id"])
+                    unique.append(fb)
+                if len(unique) >= limit:
+                    break
+        except Exception:
+            pass
+
     return unique[:limit]
 
 

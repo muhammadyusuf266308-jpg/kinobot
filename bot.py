@@ -1082,9 +1082,9 @@ def main():
     # ── Callback tugmalar ────────────────────────────────────
     app.add_handler(CallbackQueryHandler(on_callback_query))
 
-    # ── Kanal postlari ───────────────────────────────────────
+    # ── Kanal postlari (matnli va rasmli/videoli postlar) ──
     app.add_handler(MessageHandler(
-        filters.ChatType.CHANNEL & filters.TEXT,
+        filters.ChatType.CHANNEL & (filters.TEXT | filters.CAPTION),
         on_channel_post
     ))
 
