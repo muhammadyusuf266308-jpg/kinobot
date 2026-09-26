@@ -60,11 +60,12 @@ BOT_USERNAME = "UzKinoMov1eBot"   # @ siz
     POST_QUALITY,
     POST_LANG,
     POST_SOURCE,
+    POST_MEDIA,
     POST_CONFIRM
-) = range(6, 12)
+) = range(6, 13)
 
 # ─── Yangi Admin Qo'shish holatlari (ConversationHandler) ─────
-ADMIN_INPUT = 12
+ADMIN_INPUT = 13
 
 
 # ─── Yordamchilar ────────────────────────────────────────────
@@ -593,7 +594,34 @@ async def post_create_source(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     else:
         ctx.user_data["channel_post"]["source"] = val
 
+    await update.message.reply_html(
+        "6-qadam (oxirgi): <b>Kino uchun rasm yoki video</b> yuboring:\n\n"
+        "🖼 <b>Rasm</b> yoki 🎬 <b>Video</b> yuborishingiz mumkin.\n"
+        "<i>(Rasmsiz/videosiz faqat matnli post chiqarish uchun <b>-</b> yoki <b>yo'q</b> deb yozing)</i>"
+    )
+    return POST_MEDIA
+
+
+async def post_create_media(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    msg = update.message
     p_data = ctx.user_data["channel_post"]
+
+    # Rasm, video yoki o'tkazib yuborishni tekshiramiz
+    if msg.photo:
+        p_data["media_type"] = "photo"
+        p_data["media_file_id"] = msg.photo[-1].file_id
+    elif msg.video:
+        p_data["media_type"] = "video"
+        p_data["media_file_id"] = msg.video.file_id
+    elif msg.text and msg.text.strip().lower() in ["-", "yo'q", "yoq", "none", "no", "kerakmas"]:
+        p_data["media_type"] = None
+        p_data["media_file_id"] = None
+    else:
+        await msg.reply_html(
+            "⚠️ Iltimos, kino uchun <b>rasm</b> yoki <b>video</b> yuboring, yoki o'tkazib yuborish uchun <b>-</b> deb yozing:"
+        )
+        return POST_MEDIA
+
     preview_text = format_channel_post_text(p_data)
 
     confirm_keyboard = InlineKeyboardMarkup([
@@ -601,15 +629,33 @@ async def post_create_source(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("❌ Bekor qilish", callback_data="post_cancel")]
     ])
 
-    await update.message.reply_html(
-        "👀 <b>Post ko'rinishi (Prevyu):</b>\n\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        f"{preview_text}\n"
-        "━━━━━━━━━━━━━━━━━━━━\n\n"
-        "Kanalga joylansinmi?",
-        reply_markup=confirm_keyboard,
-        disable_web_page_preview=True
-    )
+    m_type = p_data.get("media_type")
+    fid = p_data.get("media_file_id")
+
+    if m_type == "photo" and fid:
+        await msg.reply_photo(
+            photo=fid,
+            caption=f"👀 <b>Post ko'rinishi (Prevyu):</b>\n\n{preview_text}\n\nKanalga joylansinmi?",
+            parse_mode=ParseMode.HTML,
+            reply_markup=confirm_keyboard
+        )
+    elif m_type == "video" and fid:
+        await msg.reply_video(
+            video=fid,
+            caption=f"👀 <b>Post ko'rinishi (Prevyu):</b>\n\n{preview_text}\n\nKanalga joylansinmi?",
+            parse_mode=ParseMode.HTML,
+            reply_markup=confirm_keyboard
+        )
+    else:
+        await msg.reply_html(
+            "👀 <b>Post ko'rinishi (Prevyu):</b>\n\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            f"{preview_text}\n"
+            "━━━━━━━━━━━━━━━━━━━━\n\n"
+            "Kanalga joylansinmi?",
+            reply_markup=confirm_keyboard,
+            disable_web_page_preview=True
+        )
     return POST_CONFIRM
 
 
@@ -629,13 +675,32 @@ async def post_create_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return ConversationHandler.END
 
         post_text = format_channel_post_text(p_data)
+        m_type = p_data.get("media_type")
+        fid = p_data.get("media_file_id")
+
         try:
-            sent_msg = await ctx.bot.send_message(
-                chat_id=CHANNEL_ID,
-                text=post_text,
-                parse_mode=ParseMode.HTML,
-                disable_web_page_preview=True
-            )
+            if m_type == "photo" and fid:
+                sent_msg = await ctx.bot.send_photo(
+                    chat_id=CHANNEL_ID,
+                    photo=fid,
+                    caption=post_text,
+                    parse_mode=ParseMode.HTML
+                )
+            elif m_type == "video" and fid:
+                sent_msg = await ctx.bot.send_video(
+                    chat_id=CHANNEL_ID,
+                    video=fid,
+                    caption=post_text,
+                    parse_mode=ParseMode.HTML
+                )
+            else:
+                sent_msg = await ctx.bot.send_message(
+                    chat_id=CHANNEL_ID,
+                    text=post_text,
+                    parse_mode=ParseMode.HTML,
+                    disable_web_page_preview=True
+                )
+
             # Post kanalga chiqdi, endi bot bazasiga ham avtomatik qo'shamiz!
             try:
                 code_val = f"Kod:{p_data['code']}"
@@ -649,16 +714,23 @@ async def post_create_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 logger.warning(f"Post bazaga saqlashda xato: {e}")
 
-            await q.message.edit_text(
+            success_txt = (
                 f"✅ <b>Post muvaffaqiyatli kanalga joylandi!</b>\n\n"
                 f"📢 Kanal: {CHANNEL_ID}\n"
                 f"🆔 Xabar ID: <code>{sent_msg.message_id}</code>\n"
-                f"🎬 Kino: <b>{p_data['title']}</b>",
-                parse_mode=ParseMode.HTML
+                f"🎬 Kino: <b>{p_data['title']}</b>"
             )
+            if q.message.caption:
+                await q.message.edit_caption(caption=success_txt, parse_mode=ParseMode.HTML)
+            else:
+                await q.message.edit_text(text=success_txt, parse_mode=ParseMode.HTML)
         except Exception as e:
             logger.error(f"Kanalga post yuborishda xatolik: {e}")
-            await q.message.edit_text(f"❌ Kanalga post yuborib bo'lmadi:\n<code>{e}</code>", parse_mode=ParseMode.HTML)
+            err_txt = f"❌ Kanalga post yuborib bo'lmadi:\n<code>{e}</code>"
+            if q.message.caption:
+                await q.message.edit_caption(caption=err_txt, parse_mode=ParseMode.HTML)
+            else:
+                await q.message.edit_text(text=err_txt, parse_mode=ParseMode.HTML)
 
         ctx.user_data.clear()
         return ConversationHandler.END
@@ -1383,6 +1455,7 @@ def main():
             POST_QUALITY: [MessageHandler(filters.TEXT & ~filters.COMMAND, post_create_quality)],
             POST_LANG:    [MessageHandler(filters.TEXT & ~filters.COMMAND, post_create_lang)],
             POST_SOURCE:  [MessageHandler(filters.TEXT & ~filters.COMMAND, post_create_source)],
+            POST_MEDIA:   [MessageHandler(filters.PHOTO | filters.VIDEO | (filters.TEXT & ~filters.COMMAND), post_create_media)],
             POST_CONFIRM: [CallbackQueryHandler(post_create_confirm, pattern="^post_")],
         },
         fallbacks=[
