@@ -15,14 +15,12 @@ logger = logging.getLogger(__name__)
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
-# Ishonchli AI modellari ketma-ketligi (Dinamik moslashuvchan tartib)
-# Qaysi model birinchi bo'lib muvaffaqiyatli javob bersa, u 1-o'ringa ko'tariladi.
-# Ishlamagan yoki vaqti o'tib ketgan modellar oxiriga tushiriladi.
+# Ishonchli AI modellari ketma-ketligi (Eng tez va barqarorlari boshida)
+# gemini-3.1-flash-lite (1.18s javob vaqti) -> gemini-3.6-flash -> gemini-3.5-flash
 MODELS = [
-    "gemma-4-26b-a4b-it",
+    "gemini-3.1-flash-lite",
     "gemini-3.6-flash",
     "gemini-3.5-flash",
-    "gemini-3.1-flash-lite",
 ]
 
 
@@ -44,8 +42,8 @@ def _demote_model(model: str):
         logger.warning(f"⚠️ Model {model} muammoli bo'lgani sababli oxiriga surildi. Yangi tartib: {MODELS}")
 
 
-def _call_gemini(prompt: str, json_mode: bool = False, timeout: int = 10) -> str | None:
-    """Gemini / Gemma API ga tezkor va adaptiv so'rov yuborish"""
+def _call_gemini(prompt: str, json_mode: bool = False, timeout: int = 7) -> str | None:
+    """Gemini API ga tezkor va adaptiv so'rov yuborish"""
     if not GEMINI_API_KEY:
         return None
 
@@ -56,7 +54,6 @@ def _call_gemini(prompt: str, json_mode: bool = False, timeout: int = 10) -> str
     if json_mode:
         data["generationConfig"]["response_mime_type"] = "application/json"
 
-    # Hozirgi modellarni nusxalab iteratsiya qilamiz
     for model in list(MODELS):
         try:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
@@ -86,75 +83,122 @@ def _clean_ai_title(raw: str) -> str:
     """AI qaytargan sarlavhadan markdown, 'Selected:', 'Title:' kabi ortiqcha prefikslarni tozalaydi"""
     if not raw:
         return ""
-    # Oldidagi 'Selected:', 'Title:', 'Kino nomi:' kabi so'zlarni tozalash
     t = re.sub(r"(?i)^(?:selected|title|movie|kino\s*nomi|nomi|film|ans|javob)\s*[:*–-]+\s*", "", raw.strip())
-    # Markdown belgilari (*, _, `, ~, #)
     t = re.sub(r"[*_`~#]", "", t)
-    # Qo'shtirnoq va tinish belgilari
     return t.strip(' "\'«»\n.:–-')
 
 
 def ask_ai_for_movie_title(user_query: str) -> dict | None:
     """
     Foydalanuvchi kino syujetini yoki tavsifini yozganda,
-    AI dan kinoning o'zbekcha va inglizcha nomlarini aniqlab berishni so'raydi.
+    AI dan kinoning o'zbekcha, inglizcha, ruscha nomlarini va muqobil nomlarini aniqlab berishni so'raydi.
     """
-    prompt = f"""Kino ekspertisan. Foydalanuvchi yozgan tavsif yoki syujetdan kino nomini aniqla.
-Hech qanday izohsiz, to'g'ridan-to'g'ri FAQAT quyidagi JSON formatida javob ber:
+    prompt = f"""Sen jahon kinosining eng kuchli ekspertisan.
+Foydalanuvchi yozgan tavsif, syujet yoki parcha qaysi filmga tegishli ekanligini aniqla.
+Hech qanday boshqa izohsiz, to'g'ridan-to'g'ri FAQAT quyidagi JSON formatida javob ber:
 {{
   "title_uz": "O'zbekcha nomi",
-  "title_en": "Inglizcha nomi"
+  "title_en": "Original Inglizcha nomi",
+  "title_ru": "Ruscha nomi",
+  "year": 2024,
+  "alt_titles": ["Muqobil nom 1", "Muqobil nom 2"]
 }}
 
-Foydalanuvchi: "{user_query}"
+Foydalanuvchi yozgan matn: "{user_query}"
 """
 
     ans = _call_gemini(prompt)
     if ans:
-        # 1. JSON javobni qidirish (teskari tartibda, oxirgi aniq natijani olish uchun)
-        matches = re.findall(r'\{[^{}]*"title_uz"[^{}]*\}', ans, flags=re.DOTALL)
-        for m in reversed(matches):
-            try:
-                data = json.loads(m)
+        # JSON parsing
+        try:
+            m = re.search(r'\{[\s\S]*"title_uz"[\s\S]*\}', ans)
+            if m:
+                data = json.loads(m.group(0))
                 if isinstance(data, dict):
                     uz = _clean_ai_title(data.get("title_uz", ""))
                     en = _clean_ai_title(data.get("title_en", ""))
-                    # Promptdagi placeholder larni inkor qilish
-                    if uz.lower() not in ["o'zbekcha nomi", "kino nomi", "...", "nomi", "oʻzbekcha nomi"] and (uz or en):
-                        res = {"title_uz": uz or en, "title_en": en or uz}
-                        logger.info(f"🤖 AI aniqladi (json): '{user_query}' -> {res}")
+                    ru = _clean_ai_title(data.get("title_ru", ""))
+                    year = data.get("year")
+                    alts = [_clean_ai_title(a) for a in data.get("alt_titles", []) if _clean_ai_title(a)]
+                    
+                    if uz.lower() not in ["o'zbekcha nomi", "kino nomi", "...", "nomi", "oʻzbekcha nomi"] and (uz or en or ru):
+                        res = {
+                            "title_uz": uz or en or ru,
+                            "title_en": en or uz or ru,
+                            "title_ru": ru or uz or en,
+                            "year": year if isinstance(year, int) else None,
+                            "alt_titles": alts
+                        }
+                        logger.info(f"🤖 AI kino aniqladi: '{user_query}' -> {res}")
                         return res
-            except Exception:
-                continue
+        except Exception as e:
+            logger.warning(f"AI movie title parse xatosi: {e}")
 
-        # 2. To'g'ridan-to'g'ri kalit regex ("title_uz": "...", "title_en": "...")
-        uz_keys = [m for m in re.findall(r'"title_uz"\s*:\s*"([^"]+)"', ans) if m.lower() not in ["o'zbekcha nomi", "kino nomi", "...", "nomi"]]
-        en_keys = [m for m in re.findall(r'"title_en"\s*:\s*"([^"]+)"', ans) if m.lower() not in ["inglizcha nomi", "movie title", "...", "title"]]
-        if uz_keys or en_keys:
-            uz = _clean_ai_title(uz_keys[-1]) if uz_keys else ""
-            en = _clean_ai_title(en_keys[-1]) if en_keys else ""
-            if uz or en:
-                res = {"title_uz": uz or en, "title_en": en or uz}
-                logger.info(f"🤖 AI aniqladi (key-regex): '{user_query}' -> {res}")
-                return res
-
-        # 3. Kalit so'zlar bo'yicha qidirish (Uzbek: ... English: ...)
-        uz_match = re.findall(r"(?:Uzbek|O'zbekcha|Oʻzbekcha)\s*(?:Title|nomi)?\s*[:*–-]+\s*([^\n\r*`]+)", ans, re.IGNORECASE)
-        en_match = re.findall(r"(?:English|Inglizcha)\s*(?:Title|nomi)?\s*[:*–-]+\s*([^\n\r*`]+)", ans, re.IGNORECASE)
-        if uz_match or en_match:
+        # Regex fallback
+        uz_match = re.findall(r'"title_uz"\s*:\s*"([^"]+)"', ans)
+        en_match = re.findall(r'"title_en"\s*:\s*"([^"]+)"', ans)
+        ru_match = re.findall(r'"title_ru"\s*:\s*"([^"]+)"', ans)
+        if uz_match or en_match or ru_match:
             uz = _clean_ai_title(uz_match[-1]) if uz_match else ""
             en = _clean_ai_title(en_match[-1]) if en_match else ""
-            if uz or en:
-                res = {"title_uz": uz or en, "title_en": en or uz}
-                logger.info(f"🤖 AI aniqladi (title-regex): '{user_query}' -> {res}")
-                return res
+            ru = _clean_ai_title(ru_match[-1]) if ru_match else ""
+            if uz or en or ru:
+                return {
+                    "title_uz": uz or en or ru,
+                    "title_en": en or uz or ru,
+                    "title_ru": ru or uz or en,
+                    "year": None,
+                    "alt_titles": []
+                }
 
-        # 4. Oddiy tozalangan matn
-        clean_ans = _clean_ai_title(ans.splitlines()[-1] if "\n" in ans else ans)
-        if clean_ans and len(clean_ans) < 60:
-            logger.info(f"🤖 AI aniqladi (raw): '{user_query}' -> '{clean_ans}'")
-            return {"title_uz": clean_ans, "title_en": clean_ans}
+    return None
 
+
+def ask_ai_admin_assistant(
+    user_message: str,
+    user_name: str = "Foydalanuvchi",
+    chat_title: str = None,
+    is_channel_comment: bool = False,
+    post_context: str = None
+) -> str | None:
+    """
+    Kanal admini nomidan foydalanuvchilar bilan samimiy, aqlli va professional muloqot qiladi.
+    Botda, guruhlarda va kanaldagi postlarga yozilgan kommentlarda ishlaydi.
+    """
+    context_info = []
+    if chat_title:
+        context_info.append(f"Chat/Guruh nomi: {chat_title}")
+    if is_channel_comment:
+        context_info.append("Holat: Foydalanuvchi kanaldagi post ostiga komment (Reply) yozdi.")
+    if post_context:
+        context_info.append(f"Post mazmuni: {post_context[:200]}")
+
+    context_str = "\n".join(context_info) if context_info else "Shaxsiy xabar"
+
+    prompt = f"""Sen kino kanali va botining rasmiy ADMINI yordamchisisan (UzKino AI Assistanti).
+Foydalanuvchi bilan xuddi kanal admini kabi samimiy, xushmuomala, professional va o'zbek tilida gaplash.
+
+BOT VA KANAL QOIDALARI:
+1. Kinoni botdan olish: Foydalanuvchi kino kodini botga yuborishi kerak (masalan, 243).
+2. Kino qidirish: Kino nomini yozish kifoya (masalan, "Astral" yoki "kino Astral").
+3. Syujet bo'yicha topish: "kinochi ..." deb syujetni yozish kerak (masalan: "kinochi bir odam o'rgimchak chaqib oladi").
+4. Menyu tugmalari: 🔥 Top kinolar, 🎭 Janrlar bo'yicha, 🎲 Tasodifiy kino.
+5. Agar foydalanuvchi salom bersa, minnatdorchilik bildirsa yoki savol bersa, muloyim javob ber.
+6. Agar foydalanuvchi kanalda yo'q kinoni so'rayotgan bo'lsa yoki admin so'rasa, "Biroz kuting, adminga so'rovingiz yetkazildi, tez orada kanalga yuklab beriladi!" deb tinchlantir.
+7. Javobing ixcham (1-3 jumla), chiroyli va o'zbek tilida Telegram HTML formatida bo'lsin (faqat <b>, <i>, <code> teglaridan foydalanishing mumkin).
+
+KONTEKST:
+{context_str}
+Foydalanuvchi ismi: {user_name}
+Foydalanuvchi xabari: "{user_message}"
+
+ADMIN JAVOBI:"""
+
+    ans = _call_gemini(prompt, timeout=6)
+    if ans:
+        # Ortiqcha admin prefikslarini tozalash (faqat 'Admin:' yoki 'Javob:' kabi sarlavhalarni)
+        ans = re.sub(r"(?i)^(?:admin|javob|uzkino ai)\s*[:*–-]+\s*", "", ans.strip())
+        return ans.strip()
     return None
 
 

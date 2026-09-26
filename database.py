@@ -27,6 +27,41 @@ def init_db():
         logger.error(f"❌ Supabase ulanish xatosi: {e}")
 
 
+import difflib
+import time
+
+_MOVIES_CACHE: list[dict] = []
+_MOVIES_CACHE_TIME: float = 0.0
+_CACHE_TTL = 180.0  # 3 daqiqa kesh
+
+
+def invalidate_movies_cache():
+    """Keshni tozalaydi, keyingi so'rovda yangidan yuklanadi"""
+    global _MOVIES_CACHE_TIME
+    _MOVIES_CACHE_TIME = 0.0
+
+
+_CYRILLIC_TO_LATIN = {
+    'а': 'a', 'б': 'b', 'в': 'v', 'г': 'g', 'д': 'd', 'е': 'e', 'ё': 'yo',
+    'ж': 'j', 'з': 'z', 'и': 'i', 'й': 'y', 'к': 'k', 'л': 'l', 'м': 'm',
+    'н': 'n', 'о': 'o', 'п': 'p', 'р': 'r', 'с': 's', 'т': 't', 'у': 'u',
+    'ф': 'f', 'х': 'x', 'ц': 'ts', 'ч': 'ch', 'ш': 'sh', 'щ': 'sh', 'ъ': "'",
+    'ы': 'i', 'ь': '', 'э': 'e', 'ю': 'yu', 'я': 'ya',
+    'ў': "o'", 'қ': 'q', 'ғ': "g'", 'ҳ': 'h'
+}
+
+
+def cyrillic_to_latin(text: str) -> str:
+    """Kirillcha yozilgan o'zbek/rus matnini lotinchaga o'giradi"""
+    if not text:
+        return ""
+    res = []
+    text_lower = text.lower()
+    for ch in text_lower:
+        res.append(_CYRILLIC_TO_LATIN.get(ch, ch))
+    return "".join(res)
+
+
 def normalize_title(text: str) -> str:
     """Nomlarni solishtirish uchun tozalash va standartlashtirish"""
     if not text:
@@ -35,12 +70,14 @@ def normalize_title(text: str) -> str:
     t = re.sub(r"[\U00010000-\U0010ffff\u2600-\u26FF\u2700-\u27BF\U0001F300-\U0001F9FF\U0001FA00-\U0001FA9F\ufe0e\ufe0f]+", "", text)
     # Apostroflarni birlashtirish (o'rgimchak, o‘rgimchak -> o'rgimchak)
     t = re.sub(r"[`ʻʼ’']", "'", t)
+    # Kirillchani ham lotinga o'giramiz
+    t = cyrillic_to_latin(t)
     # Tire, defis va tinish belgilarini bo'shliqqa aylantirish
     t = re.sub(r"[\-_–—:.,!?/()\[\]«»\"*~]+", " ", t)
     return re.sub(r"\s+", " ", t).strip().lower()
 
 
-_STOP_WORDS = {"va", "bilan", "haqida", "kino", "film", "uchun", "degan", "dagi"}
+_STOP_WORDS = {"va", "bilan", "haqida", "kino", "film", "uchun", "degan", "dagi", "the", "a", "an"}
 
 
 def words_score(query: str, title: str) -> float:
@@ -86,89 +123,189 @@ def _is_whole_word_match(query: str, title: str) -> bool:
     return bool(re.search(pattern, norm_t))
 
 
+def fuzzy_similarity(s1: str, s2: str) -> float:
+    """Ikki satr o'rtasidagi o'xshashlik foizi (0.0 dan 1.0 gacha)"""
+    if not s1 or not s2:
+        return 0.0
+    return difflib.SequenceMatcher(None, s1, s2).ratio()
+
+
+def get_cached_movies() -> list[dict]:
+    """Kinolar ro'yxatini tezkor xotira keshidan oladi yoki yangilaydi"""
+    global _MOVIES_CACHE, _MOVIES_CACHE_TIME
+    now = time.time()
+    if _MOVIES_CACHE and (now - _MOVIES_CACHE_TIME < _CACHE_TTL):
+        return _MOVIES_CACHE
+
+    client = get_client()
+    try:
+        res = client.table("movies").select("*").order("id", desc=True).execute()
+        _MOVIES_CACHE = res.data or []
+        _MOVIES_CACHE_TIME = now
+        logger.info(f"⚡ Xotira keshi yangilandi: {len(_MOVIES_CACHE)} ta kino.")
+    except Exception as e:
+        logger.error(f"Keshni yuklashda xatolik: {e}")
+        if not _MOVIES_CACHE:
+            return []
+    return _MOVIES_CACHE
+
+
 def search_movie(query: str) -> list[dict]:
     """
-    Kino qidiradi.
-    1. Kod bo'yicha (masalan "209" yoki "Kod:209")
-    2. Aniq butun so'z mosligi bo'yicha ("Tor" faqat "Tor"ni topadi, "Restorant"ni emas!)
-    3. To'liq ibora mosligi bo'yicha
+    Kino qidiruvining maksimal darajadagi algoritmi:
+    1. Kod bo'yicha (masalan '209' yoki 'Kod:209')
+    2. Tezkor xotira keshi orqali tekshirish (0.001s)
+    3. Kirill va Lotin alifbosini bir vaqtda qo'llab-quvvatlash ('аватар' -> 'avatar')
+    4. Aniq va butun so'z mosligi ('Tor' faqat 'Tor'ni topadi, 'Restorant'ni emas)
+    5. So'zlar o'rni almashishini to'g'ri tushunish ('odam orgimchak' -> 'orgimchak odam')
+    6. Fuzzy / typo qidiruv (xatolar, harf tushib qolishi: 'spayderman', 'farsaj')
     """
-    client = get_client()
     query_clean = query.strip()
     if not query_clean:
         return []
 
-    # 1. Kod bo'yicha qidirish (agar faqat raqam yoki Kod:... yozilgan bo'lsa)
+    # 1. Kod bo'yicha qidirish
     code_match = re.search(r"\b(\d+)\b", query_clean)
     if code_match and len(query_clean) < 15:
         c_num = code_match.group(1)
+        movies = get_cached_movies()
+        code_matches = []
+        for m in movies:
+            b_code = str(m.get("bot_code", ""))
+            b_clean = re.sub(r"[^\d]", "", b_code)
+            if b_clean == c_num or b_code.lower() == f"kod:{c_num}":
+                code_matches.append(m)
+        if code_matches:
+            return code_matches[:5]
+
+        # Keshda bo'lmasa Supabase dan ham tekshiramiz
         try:
-            # Aniq shu kodga teng yoki Kod:123
+            client = get_client()
             res_code = client.table("movies").select("*").or_(f"bot_code.eq.Kod:{c_num},bot_code.eq.{c_num}").limit(5).execute()
             if res_code.data:
                 return res_code.data[:5]
         except Exception:
             pass
 
-    # 2. Supabase dan nomida shu harflar qatnashgan kinolarni tortib olamiz
-    # Apostroflarning barcha turlarini (' ` ʻ ʼ ’) SQL '_' belgisi orqali qamrab olamiz
+    # 2. Xotiradagi barcha kinolarni olamiz
+    all_movies = get_cached_movies()
+    if not all_movies:
+        # Fallback: Agar kesh hali bo'sh bo'lsa, get_all_movies()
+        all_movies = get_all_movies()
+
     norm_q = normalize_title(query_clean)
-    sql_q = re.sub(r"[`ʻʼ’']", "_", query_clean)
-    q = f"%{sql_q}%"
-    raw_candidates = []
-    try:
-        res = client.table("movies").select("*").or_(f"title.ilike.{q},title_ru.ilike.{q},title_en.ilike.{q}").order("year", desc=True).limit(25).execute()
-        raw_candidates = res.data or []
-    except Exception as e:
-        logger.error(f"Qidiruv xatosi (title): {e}")
+    q_words = [w for w in norm_q.split() if len(w) >= 3 and w not in _STOP_WORDS]
 
-    # Agar qidiruv bir nechta so'zdan iborat bo'lsa va hali topilmagan bo'lsa:
-    words = [w for w in norm_q.split() if len(w) >= 3 and w not in _STOP_WORDS]
-    if len(raw_candidates) < 5 and words:
-        for w in words[:3]:
-            stem = w[:5] if len(w) >= 5 else w
-            try:
-                res_w = client.table("movies").select("*").or_(f"title.ilike.%{stem}%,title_ru.ilike.%{stem}%,title_en.ilike.%{stem}%").limit(15).execute()
-                for r in (res_w.data or []):
-                    if not any(x["id"] == r["id"] for x in raw_candidates):
-                        raw_candidates.append(r)
-            except Exception:
-                pass
+    exact_matches = []       # Ball: 100
+    whole_word_matches = []  # Ball: 90
+    word_perm_matches = []   # Ball: 80
+    partial_matches = []     # Ball: 70
+    fuzzy_matches = []       # Ball: 60 - 75
 
-    if not raw_candidates:
-        return []
+    for m in all_movies:
+        # Tekshiriladigan barcha nomlar (O'zbekcha, Ruscha, Inglizcha)
+        candidates_to_check = [
+            m.get("title") or "",
+            m.get("title_ru") or "",
+            m.get("title_en") or "",
+        ]
 
-    # 3. FILTRLASH VA SARALASH:
-    exact_matches = []      # Nom qidiruvga aynan teng bo'lsa (masalan "Tor" == "Tor")
-    whole_word_matches = [] # Butun so'z yoki so'zlar tarkibi mos kelsa ("Malika va Ajdar" == "Ajdarho va malika")
-    partial_matches = []    # Faqat 5+ harfli so'zlarda qisman moslik ("Titanik" -> "Titanik 2")
+        best_score = 0
+        match_type = None
 
-    for m in raw_candidates:
-        title = m.get("title", "")
-        norm_t = normalize_title(title)
+        for cand in candidates_to_check:
+            if not cand:
+                continue
+            norm_c = normalize_title(cand)
+            if not norm_c:
+                continue
 
-        if norm_t == norm_q:
-            exact_matches.append(m)
-        elif _is_whole_word_match(query_clean, title) or words_score(query_clean, title) >= 0.6:
-            whole_word_matches.append(m)
-        elif len(norm_q) >= 5 and norm_q in norm_t:
-            partial_matches.append(m)
+            # a) Aynan bir xil (Exact match)
+            if norm_c == norm_q:
+                best_score = max(best_score, 100)
+                match_type = "exact"
+                break
 
-    # Agar aynan yoki butun so'z mosligi topilsa, noto'g'ri qisman so'zlarni butunlay tashlab yuboramiz
-    if exact_matches or whole_word_matches:
-        results = exact_matches + whole_word_matches
+            # b) Butun so'z mosligi (Whole word match)
+            if _is_whole_word_match(norm_q, norm_c):
+                best_score = max(best_score, 90)
+                match_type = "whole"
+                continue
+
+            # c) So'zlar o'rni almashgan yoki qamrab olingan (Word permutation)
+            w_score = words_score(norm_q, norm_c)
+            if w_score >= 0.7:
+                best_score = max(best_score, 80)
+                match_type = "perm"
+                continue
+
+            # d) Qisman moslik (faqat 5+ harfli so'zlarda)
+            if len(norm_q) >= 5 and (norm_q in norm_c or norm_c in norm_q):
+                best_score = max(best_score, 70)
+                match_type = "partial"
+                continue
+
+            # e) Fuzzy similarity (xatolar, orfoepik farqlar: spayderman vs spiderman)
+            # Faqat so'rov uzunligi 4+ bo'lganda tekshiriladi
+            if len(norm_q) >= 4:
+                # To'liq sarlavha bilan
+                ratio = fuzzy_similarity(norm_q, norm_c)
+                # Yoki har bir so'z bilan
+                c_words = [w for w in norm_c.split() if len(w) >= 3]
+                for cw in c_words:
+                    w_ratio = fuzzy_similarity(norm_q, cw)
+                    if w_ratio > ratio:
+                        ratio = w_ratio
+
+                if ratio >= 0.73:
+                    score = int(60 + ratio * 20)
+                    if score > best_score:
+                        best_score = score
+                        match_type = "fuzzy"
+
+        if match_type == "exact":
+            exact_matches.append((best_score, m))
+        elif match_type == "whole":
+            whole_word_matches.append((best_score, m))
+        elif match_type == "perm":
+            word_perm_matches.append((best_score, m))
+        elif match_type == "partial":
+            partial_matches.append((best_score, m))
+        elif match_type == "fuzzy":
+            fuzzy_matches.append((best_score, m))
+
+    # Natijalarni saralab birlashtirish
+    # Agar aniq yoki butun so'z mosligi topilsa, noto'g'ri taxminlarni chetlab o'tamiz
+    if exact_matches:
+        ranked = exact_matches
+    elif whole_word_matches or word_perm_matches:
+        ranked = whole_word_matches + word_perm_matches
     else:
-        results = partial_matches
+        # Fuzzy va partial larni ball bo'yicha kamayish tartibida saralaymiz
+        fuzzy_matches.sort(key=lambda x: x[0], reverse=True)
+        ranked = partial_matches + fuzzy_matches
 
-    # ID bo'yicha dublikatlarni olib tashlaymiz
-    unique_results = []
+    # Dublikatlarni ID bo'yicha tozalash
     seen = set()
-    for r in results:
-        if r["id"] not in seen:
-            seen.add(r["id"])
-            unique_results.append(r)
+    final_results = []
+    for _, item in ranked:
+        if item["id"] not in seen:
+            seen.add(item["id"])
+            final_results.append(item)
 
-    return unique_results[:5]
+    if final_results:
+        return final_results[:5]
+
+    # 3. Agar keshdan hech narsa chiqmasa, Supabase dan to'g'ridan-to'g'ri ilike qidiruv
+    try:
+        client = get_client()
+        sql_q = re.sub(r"[`ʻʼ’']", "_", norm_q)
+        q = f"%{sql_q}%"
+        res = client.table("movies").select("*").or_(f"title.ilike.{q},title_ru.ilike.{q},title_en.ilike.{q}").order("year", desc=True).limit(5).execute()
+        return res.data or []
+    except Exception as e:
+        logger.error(f"Fallback Supabase search xatosi: {e}")
+        return []
 
 
 def add_movie(title: str, bot_code: str,
@@ -196,6 +333,7 @@ def add_movie(title: str, bot_code: str,
             .execute()
         )
         new_id = res.data[0]["id"] if res.data else 0
+        invalidate_movies_cache()
         logger.info(f"🎬 Saqlandi: '{title}' → {bot_code} (ID={new_id})")
         return new_id
     except Exception as e:
@@ -258,7 +396,10 @@ def delete_movie(movie_id: int) -> bool:
             .eq("id", movie_id)
             .execute()
         )
-        return len(res.data) > 0
+        if len(res.data) > 0:
+            invalidate_movies_cache()
+            return True
+        return False
     except Exception as e:
         logger.error(f"delete_movie xatosi: {e}")
         return False

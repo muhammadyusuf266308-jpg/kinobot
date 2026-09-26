@@ -27,7 +27,10 @@ from database import (
     get_all_admins, remove_admin
 )
 from channel_parser import parse_post, parse_post_multiple
-from ai_service import ask_ai_for_movie_title, parse_post_with_ai, ask_ai_recommend
+from ai_service import (
+    ask_ai_for_movie_title, parse_post_with_ai, ask_ai_recommend,
+    ask_ai_admin_assistant
+)
 
 # ─── Logging ─────────────────────────────────────────────────
 logging.basicConfig(
@@ -851,6 +854,21 @@ async def cmd_deladmin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 #  GURUH VA SHAXSIY CHAT XABARLARI
 # ═══════════════════════════════════════════════════════════════
 
+def is_channel_comment_or_discussion(msg) -> tuple[bool, str]:
+    """Foydalanuvchi kanaldagi post ostiga komment (Reply) yozganligini aniqlaydi"""
+    if not msg or not msg.reply_to_message:
+        return False, ""
+    parent = msg.reply_to_message
+    is_fwd = getattr(parent, "is_automatic_forward", False)
+    is_ch_sender = bool(parent.sender_chat and parent.sender_chat.type == "channel")
+    is_ch_fwd = bool(parent.forward_from_chat and parent.forward_from_chat.type == "channel")
+
+    if is_fwd or is_ch_sender or is_ch_fwd:
+        context_text = parent.text or parent.caption or ""
+        return True, context_text
+    return False, ""
+
+
 async def on_user_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     msg  = update.message
     if not msg or not msg.text:
@@ -864,9 +882,10 @@ async def on_user_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     is_private = (chat.type == "private")
+    is_ch_comment, post_ctx = is_channel_comment_or_discussion(msg)
 
-    # Agar guruhda bo'lsa va GROUP_ID sozlangan bo'lsa tekshiramiz
-    if not is_private and GROUP_ID:
+    # Agar oddiy guruhda bo'lsa (kanal posti ostidagi komment bo'lmasa) va GROUP_ID sozlangan bo'lsa tekshiramiz
+    if not is_private and not is_ch_comment and GROUP_ID:
         gid = str(GROUP_ID).lstrip("@").lower()
         chat_uname = str(getattr(chat, "username", "") or "").lstrip("@").lower()
         chat_match = (
@@ -894,6 +913,75 @@ async def on_user_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     if text == "🤖 Kinochi AI":
         await cmd_ai(update, ctx)
+        return
+
+    # ── 1. KANAL POSTIGA KOMMENT (REPLY) YOZILGANDA ──────────
+    if is_ch_comment:
+        query_c = clean_query(text)
+        # Avval bazadan qidirib ko'ramiz
+        results_c = search_movie(query_c)
+        if results_c:
+            m = results_c[0]
+            code_clean = re.sub(r"[^\d]", "", m.get("bot_code", ""))
+            bot_url = f"https://t.me/{BOT_USERNAME}?start={code_clean}" if code_clean else f"https://t.me/{BOT_USERNAME}"
+            btn = InlineKeyboardMarkup([[InlineKeyboardButton("🤖 Kinoni botdan olish", url=bot_url)]])
+            await msg.reply_html(
+                f"🎬 <b>{m['title']}</b>\n"
+                f"Kino kodi: <code>{m.get('bot_code')}</code>\n\n"
+                f"Kinoni quyidagi havola orqali botdan yuklab olishingiz mumkin 👇",
+                reply_markup=btn,
+                disable_web_page_preview=True
+            )
+            return
+
+        # Agar bazada bo'lmasa, kino so'rovi ekanligini AI orqali tekshiramiz
+        ai_data_c = ask_ai_for_movie_title(text)
+        if ai_data_c and isinstance(ai_data_c, dict) and (ai_data_c.get("title_uz") or ai_data_c.get("title_en")):
+            ai_res, _ = _search_ai_title(ai_data_c)
+            if ai_res:
+                m = ai_res[0]
+                code_clean = re.sub(r"[^\d]", "", m.get("bot_code", ""))
+                bot_url = f"https://t.me/{BOT_USERNAME}?start={code_clean}" if code_clean else f"https://t.me/{BOT_USERNAME}"
+                btn = InlineKeyboardMarkup([[InlineKeyboardButton("🤖 Kinoni botdan olish", url=bot_url)]])
+                await msg.reply_html(
+                    f"🎬 <b>{m['title']}</b>\n"
+                    f"Kino kodi: <code>{m.get('bot_code')}</code>\n\n"
+                    f"Kinoni quyidagi havola orqali botdan yuklab olishingiz mumkin 👇",
+                    reply_markup=btn,
+                    disable_web_page_preview=True
+                )
+                return
+
+            tit = ai_data_c.get("title_uz") or ai_data_c.get("title_en")
+            yr = f" ({ai_data_c['year']})" if ai_data_c.get("year") else ""
+            await msg.reply_html(
+                f"🤖 <b>AI aniqlagan kino:</b> <b>{tit}</b>{yr}\n\n"
+                f"⏳ <b>Biroz kuting!</b> Ushbu kino hozircha kanalimizda mavjud emas. "
+                f"Adminga so'rovingiz yetkazildi, tez orada kanalga yuklab beriladi!",
+                disable_web_page_preview=True
+            )
+            try:
+                await ctx.bot.send_message(
+                    ADMIN_ID,
+                    f"🚨 <b>Kanal kommentidan yangi kino so'rovi!</b>\n\n"
+                    f"👤 {mention(user)} (<code>{user.id}</code>)\n"
+                    f"🎬 AI aniqlagan: <b>{tit}</b>{yr}\n"
+                    f"💬 Komment yozilgan post: <i>{post_ctx[:120]}</i>\n"
+                    f"📝 Foydalanuvchi kommenti: <i>{text}</i>\n\n"
+                    f"⚠️ Kanalga yuklab, /post qiling!",
+                    parse_mode=ParseMode.HTML
+                )
+            except TelegramError as e:
+                logger.error(f"Komment alert admin error: {e}")
+            return
+
+        # Agar kino so'rovi bo'lmasa — post ostidagi savol yoki fikrga admin nomidan AI javob beradi
+        ans = ask_ai_admin_assistant(
+            text, user_name=user.first_name, chat_title=chat.title,
+            is_channel_comment=True, post_context=post_ctx
+        )
+        if ans:
+            await msg.reply_html(ans, disable_web_page_preview=True)
         return
 
     # ── AI kayfiyat/tavsiya (masalan "kulgili kino tavsiya ber") ──
@@ -940,36 +1028,43 @@ async def on_user_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         text.lower().startswith(w) for w in ["kinochi", "/kinochi", "!kinochi"]
     )
 
-    # Guruhda bo'lsa, qachon qidirishi kerakligini tekshiramiz:
-    is_explicit = True
-    if not is_private:
-        # 1. Bot yuborgan xabarga Reply (javob) qilib yozilgan bo'lsa
-        is_reply_to_bot = False
-        if msg.reply_to_message and msg.reply_to_message.from_user:
-            is_reply_to_bot = (msg.reply_to_message.from_user.id == ctx.bot.id or msg.reply_to_message.from_user.is_bot)
-        
-        # 2. Xabar kalit so'z bilan boshlangan bo'lsa (kinochi, kino, film, /kino, !kino, kod...)
-        starts_with_keyword = any(
-            text.lower().startswith(word.lower()) or 
-            text.lower().startswith(f"/{word.lower()}") or 
-            text.lower().startswith(f"!{word.lower()}")
-            for word in (TRIGGER_WORDS + ["kod", "kodi", "ai", "qidir"])
-        )
-        is_pure_code = text.strip().isdigit()
+    # Guruhda bo'lsa, qachon javob berishini tekshiramiz:
+    is_reply_to_bot = False
+    if not is_private and msg.reply_to_message and msg.reply_to_message.from_user:
+        is_reply_to_bot = (msg.reply_to_message.from_user.id == ctx.bot.id or msg.reply_to_message.from_user.is_bot)
 
-        # 3. Bot zikr qilingan bo'lsa
-        is_bot_mentioned = bool(ctx.bot.username and f"@{ctx.bot.username.lower()}" in text.lower())
+    starts_with_keyword = any(
+        text.lower().startswith(word.lower()) or 
+        text.lower().startswith(f"/{word.lower()}") or 
+        text.lower().startswith(f"!{word.lower()}")
+        for word in (TRIGGER_WORDS + ["kod", "kodi", "ai", "qidir", "admin"])
+    )
+    is_pure_code = text.strip().isdigit()
+    is_bot_mentioned = bool(ctx.bot.username and f"@{ctx.bot.username.lower()}" in text.lower())
 
-        is_explicit = bool(is_kinochi or is_reply_to_bot or starts_with_keyword or is_pure_code or is_bot_mentioned)
+    is_explicit = bool(is_kinochi or is_reply_to_bot or starts_with_keyword or is_pure_code or is_bot_mentioned)
 
-        # Agar ochiq qidiruv bo'lmasa, salom-alik yoki juda qisqa so'zlarni e'tiborsiz qoldiramiz
-        clean_t = text.lower().strip()
-        COMMON_GREETINGS = {
-            "salom", "assalomu alaykum", "assalom", "vaalaykum", "rahmat", "raxmat", 
-            "ok", "ha", "yo'q", "yoq", "qalesiz", "qalaysiz", "yaxshimisiz", "tushunarli", "spasibo"
-        }
-        if not is_explicit and (clean_t in COMMON_GREETINGS or len(clean_t) < 3):
-            return
+    # Guruhda begona suhbatlarga bot aralashmaydi
+    if not is_private and not is_explicit:
+        return
+
+    # ── Muloqot, salom-alik yoki umumiy savollar (Admin nomidan AI javobi) ──
+    CONVERSATIONAL_KEYWORDS = [
+        "salom", "assalom", "qalaysiz", "qalesiz", "yaxshimisiz", "tuzukmisiz",
+        "admin", "kim bu", "qanday ishlaydi", "ishlatish", "yordam", "rahmat",
+        "raxmat", "spasibo", "nima qila olasan", "kod nima", "qayerdan", "topolmadim",
+        "tushunmadim", "qanday qidiraman", "bot haqida"
+    ]
+    is_chat_msg = any(kw in t_lower for kw in CONVERSATIONAL_KEYWORDS)
+    if (is_chat_msg or text.startswith("?")) and not is_kinochi and not is_pure_code:
+        direct_movie = search_movie(clean_query(text))
+        if direct_movie and words_score(clean_query(text), direct_movie[0]["title"]) >= 0.8:
+            pass
+        else:
+            ans = ask_ai_admin_assistant(text, user_name=user.first_name, chat_title=chat.title)
+            if ans:
+                await msg.reply_html(ans, disable_web_page_preview=True)
+                return
 
     # ── Kino qidirish ──
     await _handle_search(ctx, msg, text, user, chat, is_explicit=is_explicit, is_kinochi=is_kinochi)
@@ -996,40 +1091,54 @@ async def _handle_instagram(ctx, msg, text, user, chat):
         logger.error(f"Instagram → user: {e}")
 
 
-def _search_ai_title(raw_title: str) -> tuple[list[dict], str | None]:
-    if not raw_title:
+def _search_ai_title(ai_result: dict | str) -> tuple[list[dict], str | None]:
+    """AI qaytargan ma'lumotlar (o'zbekcha, inglizcha, ruscha nomlar va muqobillar) bo'yicha bazadan qidiradi"""
+    if not ai_result:
         return [], None
-    # 1. To'g'ridan-to'g'ri qidiruv
-    res = search_movie(raw_title)
-    if res:
-        return res, raw_title
-    # 2. Agar sarlavhada qavs, yoki, / bo'lsa (masalan "Men ajdarmon (yoki Malika va ajdarho)")
-    variants = [p.strip(' ()"\'') for p in re.split(r'\(yoki|\byoki\b|\bor\b|/|\)', raw_title) if len(p.strip(' ()"\'')) >= 3]
-    for v in variants:
-        res_v = search_movie(v)
-        if res_v:
-            return res_v, v
-    return [], None
+
+    if isinstance(ai_result, str):
+        candidates = [ai_result]
+        display_title = ai_result
+    elif isinstance(ai_result, dict):
+        display_title = ai_result.get("title_uz") or ai_result.get("title_en") or ai_result.get("title_ru")
+        candidates = []
+        for key in ["title_uz", "title_en", "title_ru"]:
+            val = ai_result.get(key)
+            if val and val not in candidates:
+                candidates.append(val)
+        for alt in ai_result.get("alt_titles", []):
+            if alt and alt not in candidates:
+                candidates.append(alt)
+    else:
+        return [], None
+
+    # Har bir nom variantini tekshiramiz
+    for cand in candidates:
+        res = search_movie(cand)
+        if res:
+            return res, cand
+
+        # Sarlavhadagi ajratkichlar (masalan: "Titanik / Titanic" yoki "(yoki ...)")
+        variants = [p.strip(' ()"\'') for p in re.split(r'\(yoki|\byoki\b|\bor\b|/|\)', cand) if len(p.strip(' ()"\'')) >= 3]
+        for v in variants:
+            res_v = search_movie(v)
+            if res_v:
+                return res_v, v
+
+    return [], display_title
 
 
 async def _handle_search(ctx, msg, text, user, chat, is_explicit: bool = True, is_kinochi: bool = False):
-    query   = clean_query(text)
+    query = clean_query(text)
     results = []
     ai_suggested_title = None
+    ai_data = None
 
     if is_kinochi:
         # 1. Foydalanuvchi "kinochi ..." deb yozganda: TO'G'RIDAN-TO'G'RI AI ga yuboramiz!
         try:
             ai_data = ask_ai_for_movie_title(query)
-            if ai_data and isinstance(ai_data, dict):
-                title_uz = ai_data.get("title_uz")
-                if title_uz:
-                    results, ai_suggested_title = _search_ai_title(title_uz)
-                if not results:
-                    title_en = ai_data.get("title_en")
-                    if title_en:
-                        results, ai_suggested_title = _search_ai_title(title_en)
-            elif isinstance(ai_data, str) and ai_data:
+            if ai_data:
                 results, ai_suggested_title = _search_ai_title(ai_data)
         except Exception as e:
             logger.warning(f"AI kinochi qidiruv xatosi: {e}")
@@ -1041,15 +1150,7 @@ async def _handle_search(ctx, msg, text, user, chat, is_explicit: bool = True, i
         if not results and len(query) >= 4 and is_explicit:
             try:
                 ai_data = ask_ai_for_movie_title(query)
-                if ai_data and isinstance(ai_data, dict):
-                    title_uz = ai_data.get("title_uz")
-                    if title_uz:
-                        results, ai_suggested_title = _search_ai_title(title_uz)
-                    if not results:
-                        title_en = ai_data.get("title_en")
-                        if title_en:
-                            results, ai_suggested_title = _search_ai_title(title_en)
-                elif isinstance(ai_data, str) and ai_data:
+                if ai_data:
                     results, ai_suggested_title = _search_ai_title(ai_data)
             except Exception as e:
                 logger.warning(f"AI qidiruv xatosi: {e}")
@@ -1067,7 +1168,7 @@ async def _handle_search(ctx, msg, text, user, chat, is_explicit: bool = True, i
 
             if m.get("channel_msg_id") and CHANNEL_ID:
                 uname = str(CHANNEL_ID).lstrip("@")
-                url   = f"https://t.me/{uname}/{m['channel_msg_id']}"
+                url = f"https://t.me/{uname}/{m['channel_msg_id']}"
                 buttons.append([InlineKeyboardButton("📺 Kanaldagi postni ko'rish", url=url)])
 
             keyboard = InlineKeyboardMarkup(buttons)
@@ -1104,30 +1205,70 @@ async def _handle_search(ctx, msg, text, user, chat, is_explicit: bool = True, i
     elif is_explicit:
         log_search(user.id, user.username, user.full_name, query, False)
 
-        try:
-            await msg.reply_html(
-                f"🔎 <b>Qidirilmoqda...</b>\n\n"
-                f"<b>«{query}»</b> hozircha bazamizda yo'q.\n"
-                f"Tez orada yuklab beramiz! ⏳\n\n"
-                f"📺 {CHANNEL_ID}",
-                disable_web_page_preview=True
-            )
-        except TelegramError as e:
-            logger.error(f"Not found reply: {e}")
+        # Agar AI kinoni aniqlagan bo'lsa (lekin u bazada hali bo'lmasa)
+        if ai_data and isinstance(ai_data, dict) and (ai_data.get("title_uz") or ai_data.get("title_en")):
+            tit = ai_data.get("title_uz") or ai_data.get("title_en")
+            yr = f" ({ai_data['year']})" if ai_data.get("year") else ""
+            en_extra = f" (<i>{ai_data['title_en']}</i>)" if ai_data.get("title_en") and ai_data["title_en"].lower() != tit.lower() else ""
 
-        try:
-            await ctx.bot.send_message(
-                ADMIN_ID,
-                f"🚨 <b>Kino topilmadi!</b>\n\n"
-                f"👤 {mention(user)} (<code>{user.id}</code>)\n"
-                f"💬 {chat.title or chat.id}\n"
-                f"🔍 So'rov: <b>«{query}»</b>\n\n"
-                f"📝 Asl xabar: <i>{text}</i>\n\n"
-                f"⚠️ Kanalga post qiling!",
-                parse_mode=ParseMode.HTML
+            user_msg = (
+                f"🤖 <b>AI aniqlagan kino:</b> <b>{tit}</b>{en_extra}{yr}\n\n"
+                f"📌 <i>Ushbu kino hozircha kanalimiz va bazamizda mavjud emas.</i>\n"
+                f"⏳ <b>Biroz kuting!</b> Adminga so'rovingiz yetkazildi, tez orada kanalga yuklab beriladi!\n\n"
+                f"📺 Kanalimiz: {CHANNEL_ID}"
             )
-        except TelegramError as e:
-            logger.error(f"Not found → admin: {e}")
+            try:
+                await msg.reply_html(user_msg, disable_web_page_preview=True)
+            except TelegramError as e:
+                logger.error(f"AI identified not found reply: {e}")
+
+            try:
+                await ctx.bot.send_message(
+                    ADMIN_ID,
+                    f"🚨 <b>Kino so'rovi (Bazada yo'q)!</b>\n\n"
+                    f"👤 {mention(user)} (<code>{user.id}</code>)\n"
+                    f"💬 {chat.title or chat.id}\n"
+                    f"🎬 AI aniqlagan: <b>{tit}</b>{yr}\n"
+                    f"🔍 Foydalanuvchi so'rovi: <b>«{query}»</b>\n"
+                    f"📝 Asl xabar: <i>{text}</i>\n\n"
+                    f"⚠️ Kanalga yuklab, /post orqali chiqaring!",
+                    parse_mode=ParseMode.HTML
+                )
+            except TelegramError as e:
+                logger.error(f"AI identified → admin: {e}")
+        else:
+            # Agar AI kinoni aniqlay olmagan bo'lsa — admin nomidan umumiy javob bera oladimi tekshiramiz
+            ans = ask_ai_admin_assistant(text, user_name=user.first_name, chat_title=chat.title)
+            if ans and len(text.split()) > 2:
+                try:
+                    await msg.reply_html(ans, disable_web_page_preview=True)
+                except TelegramError as e:
+                    logger.error(f"Admin assistant reply: {e}")
+            else:
+                try:
+                    await msg.reply_html(
+                        f"🔎 <b>Qidirilmoqda...</b>\n\n"
+                        f"<b>«{query}»</b> hozircha bazamizda yo'q.\n"
+                        f"Tez orada yuklab beramiz! ⏳\n\n"
+                        f"📺 {CHANNEL_ID}",
+                        disable_web_page_preview=True
+                    )
+                except TelegramError as e:
+                    logger.error(f"Not found reply: {e}")
+
+                try:
+                    await ctx.bot.send_message(
+                        ADMIN_ID,
+                        f"🚨 <b>Kino topilmadi!</b>\n\n"
+                        f"👤 {mention(user)} (<code>{user.id}</code>)\n"
+                        f"💬 {chat.title or chat.id}\n"
+                        f"🔍 So'rov: <b>«{query}»</b>\n\n"
+                        f"📝 Asl xabar: <i>{text}</i>\n\n"
+                        f"⚠️ Kanalga post qiling!",
+                        parse_mode=ParseMode.HTML
+                    )
+                except TelegramError as e:
+                    logger.error(f"Not found → admin: {e}")
 
 
 # ═══════════════════════════════════════════════════════════════
