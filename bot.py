@@ -1047,13 +1047,27 @@ async def on_user_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     # Agar foydalanuvchi guruhda rasm/video tashlab kino so'rasa
     if not is_private and is_explicit and (msg.photo or msg.video or msg.document):
-        # Agar shunchaki rasm tashlagan bo'lsa va tekst faqat "topib ber" kabi qisqa bo'lsa
-        if len(text.split()) < 4 or is_movie_intent:
+        if is_movie_intent or is_reply_to_bot or is_bot_mentioned or is_kinochi:
             await msg.reply_html(
-                "ℹ️ <b>Kechirasiz, men rasm va videolarni ko'ra olmayman!</b>\n\n"
-                "Kino nomini yoki qisqacha syujetini so'z bilan yozib yuborsangiz, darhol topib beraman! 🎬\n\n"
-                "Yoki yordam uchun adminga murojaat qilishingiz mumkin."
+                "⏳ <b>So'rovingiz qabul qilindi!</b>\n\n"
+                "Ushbu kino tez orada adminlar tomonidan botga yuklanadi va kanalga post qilish orqali sizga xabar beriladi. Bizni kuzatib boring! 🎬"
             )
+            # Adminga forward qilish va xabar yuborish
+            try:
+                await msg.forward(chat_id=ADMIN_ID)
+                await ctx.bot.send_message(
+                    chat_id=ADMIN_ID,
+                    text=(
+                        f"🚨 <b>Guruhdan kino so'rovi (Media)</b>\n\n"
+                        f"👤 {mention(user)} (<code>{user.id}</code>)\n"
+                        f"💬 Guruh: {chat.title}\n"
+                        f"📝 Matni: <i>{text or 'Matnsiz'}</i>\n\n"
+                        f"Ushbu kinoni topib botga/kanalga yuklang!"
+                    ),
+                    parse_mode=ParseMode.HTML
+                )
+            except Exception as e:
+                logger.error(f"Guruh media sorovini adminga yuborishda xato: {e}")
             return
 
     # Guruhda begona suhbatlarga bot aralashmaydi
