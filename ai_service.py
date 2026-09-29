@@ -40,8 +40,24 @@ def _demote_model(model: str):
         logger.warning(f"⚠️ Model {model} oxiriga surildi: {MODELS}")
 
 
+async def _fetch_from_model(client: httpx.AsyncClient, model: str, data: dict) -> tuple[str, str]:
+    """Bitta modelga so'rov yuboruvchi yordamchi funksiya."""
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
+    res = await client.post(url, json=data)
+    if res.status_code == 200:
+        result = res.json()
+        candidates = result.get("candidates", [])
+        if candidates:
+            parts = candidates[0].get("content", {}).get("parts", [])
+            if parts:
+                text = parts[0].get("text", "").strip()
+                if text:
+                    return model, text
+    raise ValueError(f"Model {model} xato qaytardi: {res.status_code}")
+
+
 async def _call_gemini(prompt: str, json_mode: bool = False, timeout: int = 15) -> str | None:
-    """Gemini API ga async va adaptiv so'rov yuborish (event loopni bloklamaydi)"""
+    """Barcha modellarga bir vaqtda so'rov yuborib, birinchi kelgan javobni oladi (Race Condition)."""
     if not GEMINI_API_KEY:
         logger.warning("GEMINI_API_KEY o'rnatilmagan!")
         return None
@@ -56,39 +72,25 @@ async def _call_gemini(prompt: str, json_mode: bool = False, timeout: int = 15) 
         data["generationConfig"]["response_mime_type"] = "application/json"
 
     async with httpx.AsyncClient(timeout=timeout) as client:
-        for model in list(MODELS):
-            try:
-                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
-                res = await client.post(url, json=data)
-                if res.status_code == 200:
-                    result = res.json()
-                    candidates = result.get("candidates", [])
-                    if candidates:
-                        parts = candidates[0].get("content", {}).get("parts", [])
-                        if parts:
-                            text = parts[0].get("text", "").strip()
-                            if text:
-                                _promote_model(model)
-                                return text
-                    _demote_model(model)
-                    continue  # Empty response, skip to next model
-                elif res.status_code in [503, 429]:
-                    # Server band yoki limit — darhol keyingi modelga o'tish
-                    logger.info(f"Model {model} band ({res.status_code}), keyingisiga o'tilmoqda...")
-                    _demote_model(model)
-                    continue
-                else:
-                    logger.warning(f"Model {model} xato (status {res.status_code})")
-                    _demote_model(model)
-                    continue
-            except httpx.TimeoutException:
-                logger.warning(f"Model {model} vaqti tugadi ({timeout}s)")
-                _demote_model(model)
-                continue
-            except Exception as e:
-                logger.warning(f"Model {model} xatolik: {e}")
-                _demote_model(model)
-                continue
+        # Barcha modellarga bir vaqtda so'rov yaratamiz
+        tasks = [asyncio.create_task(_fetch_from_model(client, m, data)) for m in MODELS]
+        
+        while tasks:
+            # Birinchi yakunlangan so'rovni kutamiz
+            done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            
+            for task in done:
+                try:
+                    model, text = task.result()
+                    # Muvaffaqiyatli! Qolgan so'rovlarni bekor qilamiz
+                    for p in pending:
+                        p.cancel()
+                    _promote_model(model)
+                    return text
+                except Exception as e:
+                    pass
+            
+            tasks = list(pending)
 
     return None
 
@@ -187,37 +189,37 @@ async def ask_ai_universal(
 
     ctx_str = "\n".join(context_info) if context_info else ""
 
-    prompt = f"""Sen kino kanali va botining eng kuchli, tajribali jahon kinosi ensiklopediyasi va universal intellektli AI yordamchisisan.
-Sen minglab kinolarni, ularning eng kichik detallari, qisqa syujet parchalari, qahramonlari, atmosferasi (masalan, kimsasiz cho'l poygalari, vampirlar va qorong'u qal'a, orolga tushib qolgan odam va to'p, vaqt sayohati va qora tuynuk kabilar) orqali darhol qaysi film ekanligini 100% aniqlik bilan topa olasan.
-Shuningdek, foydalanuvchilarning HAR QANDAY boshqa savoliga (kino olami, aktyorlar, fan, dunyoqarash, faktlar, salom-alik, botdan foydalanish) to'liq, muloyim, qiziqarli va o'zbek tilida javob bera oladigan bilimdon intellektsan.
+    prompt = f"""Sen kino kanali va botining qidiruvchi tizimi emassan, balki tirik, haqiqiy insonsan (guruh admini). 
+Sening vazifang - odamlar qidirayotgan kinolarni tezda topib berish va ular bilan xuddi insonlardek suhbatlashish. 
+Hech qachon o'zingni "bot", "AI" yoki "sun'iy intellekt" deb tanishtirma. Odamlar bilan go'yo ularning yaqin do'stidek, samimiy va erkin tilda (o'zbek tilida) gaplash! Shuningdek, minglab kinolarni syujeti orqali topib bera olasan.
 
 FOYDALANUVCHI XABARINI TAHLIL QIL VA FAQAT QUYIDAGI JSON FORMATIDA JAVOB BER:
 
-1. Agar foydalanuvchi ma'lum bir KINONI qidirayotgan bo'lsa (nomini to'liq yozgan, noto'g'ri yozgan, yoki faqat qisqa syujetini, bitta sahnasini, atmosferasini, aktyorini yoki voqealar rivojini tasvirlab bergan bo'lsa):
+1. Agar foydalanuvchi ma'lum bir KINONI qidirayotgan bo'lsa (nomini yozgan yoki syujetini tasvirlagan bo'lsa):
 {{
   "type": "movie_search",
   "title_uz": "Kinoning o'zbekcha mashhur nomi",
-  "title_en": "Original inglizcha rasmiy nomi",
+  "title_en": "Original inglizcha nomi",
   "title_ru": "Ruscha nomi",
   "year": 2024,
-  "alt_titles": ["Muqobil nom 1", "Muqobil nom 2"]
+  "alt_titles": []
 }}
 
-2. Agar foydalanuvchi KINO TAVSIYASI so'rayotgan bo'lsa (masalan "qanaqa kino ko'ray", "dahshatli kino ayt", "zerikdim", "kayfiyatim yo'q"):
+2. Agar foydalanuvchi KINO TAVSIYASI so'rayotgan bo'lsa:
 {{
   "type": "recommendation",
   "genre": "jangari",
   "text": "Tavsiya sababi (1 jumla)"
 }}
 
-3. HAR QANDAY BOSHQA SAVOL, SUHBAT, ILMIY/DUNYOVIY SAVOL, SALOM-ALIK YOKI ODAMLARNING O'ZARO SUHBATI BO'LSA:
-Sen guruhning haqiqiy va faol adminisan. Foydalanuvchilar nima haqida gapirayotgan bo'lsa, xuddi insondek suhbatga qo'shil, o'z fikringni bildir, muloyim va samimiy javob qaytar (Telegram HTML formatida, <b>, <i>, <code> teglaridan foydalanib yoz):
+3. HAR QANDAY BOSHQA SAVOL, SUHBAT, SALOM-ALIK YOKI ODAMLARNING O'ZARO SUHBATI BO'LSA:
+Sen guruhning tirik va faol adminisan. Foydalanuvchilar nima haqida gapirayotgan bo'lsa, xuddi odamdek suhbatga qo'shil, o'z fikringni bildir, hazillash, samimiy va erkin javob qaytar (Telegram HTML formatida, <b>, <i> teglaridan foydalanib yoz):
 {{
   "type": "chat",
-  "text": "Suhbatga munosib, admin kabi javobing..."
+  "text": "Haqiqiy inson kabi samimiy va erkin javobing..."
 }}
 
-4. Agar xabar mutlaqo ma'nosiz bo'lsa (masalan, faqat bitta nuqta, bitta harf) yoki javob berish umuman mantiqsiz bo'lsa:
+4. Agar xabar mutlaqo ma'nosiz bo'lsa (masalan, faqat bitta nuqta, bitta harf) yoki aralashish umuman mantiqsiz bo'lsa:
 {{
   "type": "ignore"
 }}
@@ -268,17 +270,13 @@ async def ask_ai_admin_assistant(
 
     context_str = "\n".join(context_info) if context_info else "Shaxsiy xabar"
 
-    prompt = f"""Sen kino kanali va botining rasmiy ADMINI yordamchisisan (UzKino AI Assistanti).
-Foydalanuvchi bilan xuddi kanal admini kabi samimiy, xushmuomala, professional va o'zbek tilida gaplash.
+    prompt = f"""Sen guruhning rasmiy adminisan, bot emas, tirik insonsan. Hech qachon o'zingni sun'iy intellekt, bot yoki AI deb tanishtirma!
+Odamlar bilan oddiy, samimiy, xushmuomala va o'zbek tilining kundalik so'zlashuv uslubida gaplash.
 
-BOT VA KANAL QOIDALARI:
-1. Kinoni botdan olish: Foydalanuvchi kino kodini botga yuborishi kerak (masalan, 243).
-2. Kino qidirish: Kino nomini yozish kifoya (masalan, "Astral" yoki "kino Astral").
-3. Syujet bo'yicha topish: "kinochi ..." deb syujetni yozish kerak.
-4. Menyu tugmalari: 🔥 Top kinolar, 🎭 Janrlar bo'yicha, 🎲 Tasodifiy kino.
-5. Agar foydalanuvchilar o'zaro gaplashayotgan bo'lsa, suhbatga munosib ravishda, haqiqiy guruh admini sifatida qo'shilib, samimiy javob ber!
-6. Agar foydalanuvchi kanalda yo'q kinoni so'rayotgan bo'lsa, "Biroz kuting, adminga so'rovingiz yetkazildi, tez orada kanalga yuklab beriladi!" deb tinchlantir.
-7. Javobing ixcham (1-3 jumla), chiroyli va o'zbek tilida Telegram HTML formatida bo'lsin. Agar xabar mutlaqo ma'nosiz bo'lsa "IGNORE" deb javob qaytar.
+QOIDALAR:
+1. Agar odamlar kino izlasa va topilmasa: "Biroz kuting, hozir topib kanalga tashlaymiz!" deb ishonchli ayt.
+2. Odamlar o'zaro gaplashayotgan bo'lsa, suhbatga munosib ravishda, haqiqiy guruh admini sifatida qo'shilib, samimiy javob ber!
+3. Javobing qisqa, tabiiy va insoniy bo'lsin. Agar xabar mutlaqo ma'nosiz bo'lsa "IGNORE" deb javob qaytar.
 
 KONTEKST:
 {context_str}
