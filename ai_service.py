@@ -210,10 +210,16 @@ FOYDALANUVCHI XABARINI TAHLIL QIL VA FAQAT QUYIDAGI JSON FORMATIDA JAVOB BER:
   "text": "Tavsiya sababi (1 jumla)"
 }}
 
-3. HAR QANDAY BOSHQA SAVOL, SUHBAT, ILMIY/DUNYOVIY SAVOL, SALOM-ALIK YOKI MUROJAAT BO'LSA:
+3. HAR QANDAY BOSHQA SAVOL, SUHBAT, ILMIY/DUNYOVIY SAVOL, SALOM-ALIK YOKI ODAMLARNING O'ZARO SUHBATI BO'LSA:
+Sen guruhning haqiqiy va faol adminisan. Foydalanuvchilar nima haqida gapirayotgan bo'lsa, xuddi insondek suhbatga qo'shil, o'z fikringni bildir, muloyim va samimiy javob qaytar (Telegram HTML formatida, <b>, <i>, <code> teglaridan foydalanib yoz):
 {{
   "type": "chat",
-  "text": "Savolga to'liq, aniq, muloyim va foydali javob (Telegram HTML formatida, <b>, <i>, <code> teglaridan foydalanib yoz)"
+  "text": "Suhbatga munosib, admin kabi javobing..."
+}}
+
+4. Agar xabar mutlaqo ma'nosiz bo'lsa (masalan, faqat bitta nuqta, bitta harf) yoki javob berish umuman mantiqsiz bo'lsa:
+{{
+  "type": "ignore"
 }}
 
 {ctx_str}
@@ -235,6 +241,8 @@ Foydalanuvchi xabari: "{user_message}"
     # Fallback
     raw_chat = await ask_ai_admin_assistant(user_message, user_name, chat_title, is_channel_comment, post_context)
     if raw_chat:
+        if "IGNORE" in raw_chat.upper():
+            return {"type": "ignore"}
         return {"type": "chat", "text": raw_chat}
 
     return {"type": "chat", "text": f"Assalomu alaykum, <b>{user_name}</b>! Sizga qanday yordam bera olaman? Kino nomi yoki kodini yozing, darhol topib beraman! 😊"}
@@ -268,9 +276,9 @@ BOT VA KANAL QOIDALARI:
 2. Kino qidirish: Kino nomini yozish kifoya (masalan, "Astral" yoki "kino Astral").
 3. Syujet bo'yicha topish: "kinochi ..." deb syujetni yozish kerak.
 4. Menyu tugmalari: 🔥 Top kinolar, 🎭 Janrlar bo'yicha, 🎲 Tasodifiy kino.
-5. Agar foydalanuvchi salom bersa, minnatdorchilik bildirsa yoki savol bersa, muloyim javob ber.
+5. Agar foydalanuvchilar o'zaro gaplashayotgan bo'lsa, suhbatga munosib ravishda, haqiqiy guruh admini sifatida qo'shilib, samimiy javob ber!
 6. Agar foydalanuvchi kanalda yo'q kinoni so'rayotgan bo'lsa, "Biroz kuting, adminga so'rovingiz yetkazildi, tez orada kanalga yuklab beriladi!" deb tinchlantir.
-7. Javobing ixcham (1-3 jumla), chiroyli va o'zbek tilida Telegram HTML formatida bo'lsin.
+7. Javobing ixcham (1-3 jumla), chiroyli va o'zbek tilida Telegram HTML formatida bo'lsin. Agar xabar mutlaqo ma'nosiz bo'lsa "IGNORE" deb javob qaytar.
 
 KONTEKST:
 {context_str}

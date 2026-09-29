@@ -1083,9 +1083,9 @@ async def on_user_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 logger.error(f"Guruh media sorovini adminga yuborishda xato: {e}")
             return
 
-    # Guruhda begona suhbatlarga bot aralashmaydi
-    if not is_private and not is_explicit:
-        return
+    # Guruhda hamma xabarlar AI orqali tahlil qilinishi uchun `is_explicit` shartini olib tashladik
+    # if not is_private and not is_explicit:
+    #     return
 
     # ── 2. KINO QIDIRISH (Avval bazadan xotiradagi kesh orqali tekshirish) ──
     query = clean_query(text)
@@ -1096,6 +1096,9 @@ async def on_user_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     # ── 3. UNIVERSAL AI (Deyarli har qanday savol, suhbat yoki kino so'roviga to'liq javob) ──
     ai_res = await ask_ai_universal(ai_target_text, user_name=user.first_name, chat_title=chat.title)
+
+    if ai_res.get("type") == "ignore":
+        return
 
     if ai_res.get("type") == "movie_search":
         ai_movies, ai_title = _search_ai_title(ai_res)
@@ -1163,9 +1166,9 @@ async def on_user_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     elif ai_res.get("type") == "chat":
         # Har qanday savol, suhbat yoki ma'lumot
         chat_text = ai_res.get("text", "")
-        if chat_text:
+        if chat_text and "IGNORE" not in chat_text.upper():
             await msg.reply_html(chat_text, disable_web_page_preview=True)
-            return
+        return
 
     # Fallback
     await msg.reply_html(
