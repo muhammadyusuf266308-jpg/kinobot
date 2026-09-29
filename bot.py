@@ -1045,8 +1045,20 @@ async def on_user_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     is_explicit = bool(is_kinochi or is_reply_to_bot or starts_with_keyword or is_pure_code or is_bot_mentioned or is_movie_intent)
 
-    # Agar foydalanuvchi guruhda rasm/video tashlab kino so'rasa
-    if not is_private and is_explicit and (msg.photo or msg.video or msg.document):
+    # Media holatini tekshirish
+    has_media = bool(msg.photo or msg.video or msg.document)
+    replied_has_media = False
+    ai_target_text = text
+    
+    if msg.reply_to_message:
+        r_msg = msg.reply_to_message
+        replied_has_media = bool(r_msg.photo or r_msg.video or r_msg.document)
+        r_text = (r_msg.text or r_msg.caption or "").strip()
+        if r_text:
+            ai_target_text = f"Suhbatdosh xabari: '{r_text}'\nFoydalanuvchi javobi: '{text}'"
+
+    # Agar foydalanuvchi guruhda rasm/video tashlab kino so'rasa yoki shunday xabarga javob qilsa
+    if not is_private and is_explicit and (has_media or replied_has_media):
         if is_movie_intent or is_reply_to_bot or is_bot_mentioned or is_kinochi:
             await msg.reply_html(
                 "⏳ <b>So'rovingiz qabul qilindi!</b>\n\n"
@@ -1054,14 +1066,15 @@ async def on_user_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             )
             # Adminga forward qilish va xabar yuborish
             try:
-                await msg.forward(chat_id=ADMIN_ID)
+                target_media_msg = msg if has_media else msg.reply_to_message
+                await target_media_msg.forward(chat_id=ADMIN_ID)
                 await ctx.bot.send_message(
                     chat_id=ADMIN_ID,
                     text=(
                         f"🚨 <b>Guruhdan kino so'rovi (Media)</b>\n\n"
                         f"👤 {mention(user)} (<code>{user.id}</code>)\n"
                         f"💬 Guruh: {chat.title}\n"
-                        f"📝 Matni: <i>{text or 'Matnsiz'}</i>\n\n"
+                        f"📝 Foydalanuvchi yozuvi: <i>{text or 'Matnsiz'}</i>\n\n"
                         f"Ushbu kinoni topib botga/kanalga yuklang!"
                     ),
                     parse_mode=ParseMode.HTML
@@ -1082,7 +1095,7 @@ async def on_user_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     # ── 3. UNIVERSAL AI (Deyarli har qanday savol, suhbat yoki kino so'roviga to'liq javob) ──
-    ai_res = await ask_ai_universal(text, user_name=user.first_name, chat_title=chat.title)
+    ai_res = await ask_ai_universal(ai_target_text, user_name=user.first_name, chat_title=chat.title)
 
     if ai_res.get("type") == "movie_search":
         ai_movies, ai_title = _search_ai_title(ai_res)
