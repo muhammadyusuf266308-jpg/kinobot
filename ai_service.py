@@ -57,44 +57,38 @@ async def _call_gemini(prompt: str, json_mode: bool = False, timeout: int = 15) 
 
     async with httpx.AsyncClient(timeout=timeout) as client:
         for model in list(MODELS):
-            for attempt in range(2):  # 503 uchun 1 marta qayta urinish
-                try:
-                    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
-                    res = await client.post(url, json=data)
-                    if res.status_code == 200:
-                        result = res.json()
-                        candidates = result.get("candidates", [])
-                        if candidates:
-                            parts = candidates[0].get("content", {}).get("parts", [])
-                            if parts:
-                                text = parts[0].get("text", "").strip()
-                                if text:
-                                    _promote_model(model)
-                                    return text
-                        _demote_model(model)
-                        break  # Empty response, skip to next model
-                    elif res.status_code == 503 and attempt == 0:
-                        # Vaqtinchalik yuklama — 1.5 soniya kutib qayta urinamiz
-                        logger.info(f"Model {model} band (503), 1.5s kutilmoqda...")
-                        await asyncio.sleep(1.5)
-                        continue
-                    elif res.status_code == 429 and attempt == 0:
-                        # Rate limit — 2 soniya kutib qayta urinamiz
-                        logger.info(f"Model {model} rate limit (429), 2s kutilmoqda...")
-                        await asyncio.sleep(2.0)
-                        continue
-                    else:
-                        logger.warning(f"Model {model} xato (status {res.status_code})")
-                        _demote_model(model)
-                        break
-                except httpx.TimeoutException:
-                    logger.warning(f"Model {model} vaqti tugadi ({timeout}s)")
+            try:
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
+                res = await client.post(url, json=data)
+                if res.status_code == 200:
+                    result = res.json()
+                    candidates = result.get("candidates", [])
+                    if candidates:
+                        parts = candidates[0].get("content", {}).get("parts", [])
+                        if parts:
+                            text = parts[0].get("text", "").strip()
+                            if text:
+                                _promote_model(model)
+                                return text
                     _demote_model(model)
-                    break
-                except Exception as e:
-                    logger.warning(f"Model {model} xatolik: {e}")
+                    continue  # Empty response, skip to next model
+                elif res.status_code in [503, 429]:
+                    # Server band yoki limit — darhol keyingi modelga o'tish
+                    logger.info(f"Model {model} band ({res.status_code}), keyingisiga o'tilmoqda...")
                     _demote_model(model)
-                    break
+                    continue
+                else:
+                    logger.warning(f"Model {model} xato (status {res.status_code})")
+                    _demote_model(model)
+                    continue
+            except httpx.TimeoutException:
+                logger.warning(f"Model {model} vaqti tugadi ({timeout}s)")
+                _demote_model(model)
+                continue
+            except Exception as e:
+                logger.warning(f"Model {model} xatolik: {e}")
+                _demote_model(model)
+                continue
 
     return None
 
