@@ -7,7 +7,8 @@ import re
 import html as html_mod
 from telegram import (
     Update, InlineKeyboardMarkup, InlineKeyboardButton,
-    ForceReply, ReplyKeyboardMarkup, KeyboardButton
+    ForceReply, ReplyKeyboardMarkup, KeyboardButton,
+    BotCommand, BotCommandScopeChat, BotCommandScopeDefault
 )
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
@@ -903,10 +904,10 @@ def is_channel_comment_or_discussion(msg) -> tuple[bool, str]:
 
 async def on_user_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     msg  = update.message
-    if not msg or not msg.text:
+    if not msg:
         return
-
-    text = msg.text.strip()
+        
+    text = (msg.text or msg.caption or "").strip()
     user = update.effective_user
     chat = update.effective_chat
 
@@ -1033,8 +1034,27 @@ async def on_user_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
     is_pure_code = text.strip().isdigit()
     is_bot_mentioned = bool(ctx.bot.username and f"@{ctx.bot.username.lower()}" in text.lower())
+    
+    # Guruhda kino so'rash niyati borligini ifodalovchi so'zlar
+    movie_search_phrases = [
+        "topib", "qaysi kino", "kino nomi", "kino kerak", 
+        "nomi nima", "kinoni nomi", "shu kinoni", "shu filmni",
+        "topib ber", "nomini", "qanaqa kino", "qanaqa film"
+    ]
+    is_movie_intent = any(phrase in text.lower() for phrase in movie_search_phrases)
 
-    is_explicit = bool(is_kinochi or is_reply_to_bot or starts_with_keyword or is_pure_code or is_bot_mentioned)
+    is_explicit = bool(is_kinochi or is_reply_to_bot or starts_with_keyword or is_pure_code or is_bot_mentioned or is_movie_intent)
+
+    # Agar foydalanuvchi guruhda rasm/video tashlab kino so'rasa
+    if not is_private and is_explicit and (msg.photo or msg.video or msg.document):
+        # Agar shunchaki rasm tashlagan bo'lsa va tekst faqat "topib ber" kabi qisqa bo'lsa
+        if len(text.split()) < 4 or is_movie_intent:
+            await msg.reply_html(
+                "ℹ️ <b>Kechirasiz, men rasm va videolarni ko'ra olmayman!</b>\n\n"
+                "Kino nomini yoki qisqacha syujetini so'z bilan yozib yuborsangiz, darhol topib beraman! 🎬\n\n"
+                "Yoki yordam uchun adminga murojaat qilishingiz mumkin."
+            )
+            return
 
     # Guruhda begona suhbatlarga bot aralashmaydi
     if not is_private and not is_explicit:
@@ -1467,11 +1487,73 @@ async def on_error(update: object, ctx: ContextTypes.DEFAULT_TYPE):
 #  MAIN
 # ═══════════════════════════════════════════════════════════════
 
+async def post_init(application):
+    """Bot ishga tushganda Telegram buyruqlar menyusini o'rnatadi"""
+    bot = application.bot
+
+    # Oddiy foydalanuvchilar uchun buyruqlar (/ bosganda ko'rinadi)
+    user_commands = [
+        BotCommand("start", "🚀 Botni ishga tushirish"),
+        BotCommand("top", "🔥 Top kinolar"),
+        BotCommand("random", "🎲 Tasodifiy kino"),
+        BotCommand("genre", "🎭 Janrlar bo'yicha qidirish"),
+        BotCommand("ai", "🤖 Kinochi AI yordamchisi"),
+    ]
+    await bot.set_my_commands(user_commands, scope=BotCommandScopeDefault())
+
+    # Admin uchun to'liq buyruqlar ro'yxati
+    admin_commands = [
+        BotCommand("start", "🚀 Botni ishga tushirish"),
+        BotCommand("admin", "👑 Admin boshqaruv paneli"),
+        BotCommand("post", "📝 Kanalga yangi post yaratish"),
+        BotCommand("addmovie", "➕ Yangi kino qo'shish"),
+        BotCommand("listmovies", "📋 Barcha kinolar ro'yxati"),
+        BotCommand("delmovie", "🗑 Kinoni o'chirish"),
+        BotCommand("stats", "📊 Statistika"),
+        BotCommand("sync", "🔄 Kanal sinxronlash"),
+        BotCommand("addadmin", "👤 Yangi admin qo'shish"),
+        BotCommand("admins", "👥 Adminlar ro'yxati"),
+        BotCommand("deladmin", "❌ Adminni o'chirish"),
+        BotCommand("panel", "📢 Guruhga qidiruv tugmasi"),
+        BotCommand("top", "🔥 Top kinolar"),
+        BotCommand("random", "🎲 Tasodifiy kino"),
+        BotCommand("genre", "🎭 Janrlar bo'yicha"),
+        BotCommand("ai", "🤖 Kinochi AI"),
+        BotCommand("cancel", "❌ Bekor qilish"),
+    ]
+    try:
+        await bot.set_my_commands(
+            admin_commands,
+            scope=BotCommandScopeChat(chat_id=ADMIN_ID)
+        )
+        logger.info(f"✅ Admin buyruqlari o'rnatildi (ID: {ADMIN_ID})")
+    except Exception as e:
+        logger.warning(f"Admin buyruqlarini o'rnatishda xato: {e}")
+
+    # Qo'shimcha adminlar uchun ham
+    try:
+        extra_admins = get_all_admins()
+        for adm in extra_admins:
+            uid = int(adm.get("user_id", 0))
+            if uid and uid != ADMIN_ID:
+                try:
+                    await bot.set_my_commands(
+                        admin_commands,
+                        scope=BotCommandScopeChat(chat_id=uid)
+                    )
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    logger.info("✅ Bot buyruqlari menyusi o'rnatildi.")
+
+
 def main():
     logger.info("🤖 Bot ishga tushmoqda...")
     init_db()
 
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
 
     # ── Admin Kino qo'shish ConversationHandler ──────────────
     add_movie_handler = ConversationHandler(
@@ -1558,7 +1640,7 @@ def main():
 
     # ── Guruh va shaxsiy chat xabarlari (qidiruv va instagram) 
     app.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND,
+        (filters.TEXT | filters.CAPTION | filters.PHOTO | filters.VIDEO) & ~filters.COMMAND,
         on_user_message
     ))
 
