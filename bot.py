@@ -4,6 +4,7 @@
 # ============================================================
 import logging
 import re
+import html as html_mod
 from telegram import (
     Update, InlineKeyboardMarkup, InlineKeyboardButton,
     ForceReply, ReplyKeyboardMarkup, KeyboardButton
@@ -116,7 +117,7 @@ def format_multiple_movies(results: list[dict], query: str, ai_suggested_title: 
     if ai_suggested_title:
         lines.append(f"🤖 <i>AI aniqlagan kino: <b>{ai_suggested_title}</b></i>\n")
 
-    lines.append(f"🔎 <b>«{query}» bo'yicha {len(results)} ta kino topildi:</b>\n")
+    lines.append(f"🔎 <b>«{html_mod.escape(query)}» bo'yicha {len(results)} ta kino topildi:</b>\n")
 
     buttons = []
     for idx, m in enumerate(results[:6], 1):
@@ -386,7 +387,7 @@ async def on_callback_query(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def add_movie_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Admin kino qo'shishni boshlaydi (/addmovie yoki tugma)"""
     user_id = update.effective_user.id
-    if user_id != ADMIN_ID:
+    if not is_user_admin(user_id, ADMIN_ID):
         return ConversationHandler.END
 
     text = (
@@ -529,7 +530,7 @@ def format_channel_post_text(data: dict) -> str:
 async def post_create_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Admin kanalga post yaratishni boshlaydi (/post yoki tugma)"""
     user_id = update.effective_user.id
-    if user_id != ADMIN_ID:
+    if not is_user_admin(user_id, ADMIN_ID):
         return ConversationHandler.END
 
     ctx.user_data["channel_post"] = {}
@@ -928,7 +929,10 @@ async def on_user_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     # ── Instagram linki ──────────────────────────────────────
     if is_instagram(text):
-        await _handle_instagram(ctx, msg, text, user, chat)
+        await msg.reply_html(
+            "ℹ️ Instagram havolalari hozircha qo'llab-quvvatlanmaydi.\n"
+            "Kino nomi yoki kodini yozing, darhol topib beraman! 🎬"
+        )
         return
 
     # ── Doimiy menyu tugmalari ────────────────────────────────
@@ -966,7 +970,7 @@ async def on_user_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return
 
         # Agar bazada bo'lmasa — Universal AI ga topshiramiz
-        ai_res = ask_ai_universal(
+        ai_res = await ask_ai_universal(
             text, user_name=user.first_name, chat_title=chat.title,
             is_channel_comment=True, post_context=post_ctx
         )
@@ -1044,7 +1048,7 @@ async def on_user_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     # ── 3. UNIVERSAL AI (Deyarli har qanday savol, suhbat yoki kino so'roviga to'liq javob) ──
-    ai_res = ask_ai_universal(text, user_name=user.first_name, chat_title=chat.title)
+    ai_res = await ask_ai_universal(text, user_name=user.first_name, chat_title=chat.title)
 
     if ai_res.get("type") == "movie_search":
         ai_movies, ai_title = _search_ai_title(ai_res)
@@ -1118,7 +1122,7 @@ async def on_user_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     # Fallback
     await msg.reply_html(
-        f"🔎 <b>«{query}»</b> hozircha bazamizda topilmadi.\n"
+        f"🔎 <b>«{html_mod.escape(query)}»</b> hozircha bazamizda topilmadi.\n"
         f"Tez orada yuklab beramiz! ⏳\n\n"
         f"📺 {CHANNEL_ID}",
         disable_web_page_preview=True
@@ -1190,7 +1194,7 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     movies_list = parse_post_multiple(text, message_id=post.message_id)
     if not movies_list:
         try:
-            movies_list = parse_post_with_ai(text, message_id=post.message_id)
+            movies_list = await parse_post_with_ai(text, message_id=post.message_id)
         except Exception as e:
             logger.warning(f"AI post tahlil xatosi: {e}")
 

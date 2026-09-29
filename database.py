@@ -515,16 +515,12 @@ def remove_admin(user_id: int) -> bool:
 
 
 def get_random_movie() -> dict | None:
-    """Tasodifiy bitta kino qaytaradi"""
+    """Tasodifiy bitta kino qaytaradi (keshdan)"""
     import random
-    client = get_client()
-    try:
-        res = client.table("movies").select("*").execute()
-        data = res.data or []
-        return random.choice(data) if data else None
-    except Exception as e:
-        logger.error(f"get_random_movie xatosi: {e}")
-        return None
+    movies = get_cached_movies()
+    if not movies:
+        movies = get_all_movies()
+    return random.choice(movies) if movies else None
 
 
 GENRE_SYNONYMS = {

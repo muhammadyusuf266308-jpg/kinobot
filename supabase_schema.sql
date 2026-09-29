@@ -37,3 +37,15 @@ CREATE TABLE IF NOT EXISTS search_log (
 -- Row Level Security o'chirish (bot server-side ishlaydi)
 ALTER TABLE movies     DISABLE ROW LEVEL SECURITY;
 ALTER TABLE search_log DISABLE ROW LEVEL SECURITY;
+
+-- Admin boshqaruv jadvali
+CREATE TABLE IF NOT EXISTS bot_admins (
+    id          BIGSERIAL PRIMARY KEY,
+    user_id     BIGINT      NOT NULL UNIQUE,
+    username    TEXT,
+    full_name   TEXT,
+    added_by    BIGINT,
+    added_at    TIMESTAMPTZ DEFAULT NOW()
+);
+
+ALTER TABLE bot_admins DISABLE ROW LEVEL SECURITY;

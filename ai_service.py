@@ -1,12 +1,12 @@
 # ============================================================
-#  ai_service.py  –  Google Gemini & Gemma AI Xizmati
+#  ai_service.py  –  Google Gemini AI Xizmati (Async + Ishonchli)
 #  Syujet bo'yicha qidiruv va Dinamik Model Reytingi
 # ============================================================
 import os
 import re
 import json
 import logging
-import requests
+import httpx
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -15,11 +15,9 @@ logger = logging.getLogger(__name__)
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
-# Ishonchli AI modellari ketma-ketligi (Eng tez va barqarorlari boshida)
-# gemini-3.1-flash-lite (1.18s javob vaqti) -> gemini-3.6-flash -> gemini-3.5-flash
+# Haqiqiy mavjud Google Gemini modellari (eng tezi birinchi)
 MODELS = [
-    "gemini-3.1-flash-lite",
-    "gemini-3.6-flash",
+    "gemini-3.8-flash",
     "gemini-3.5-flash",
 ]
 
@@ -30,57 +28,79 @@ def _promote_model(model: str):
     if model in MODELS and MODELS[0] != model:
         MODELS.remove(model)
         MODELS.insert(0, model)
-        logger.info(f"🚀 Model {model} muvaffaqiyatli ishladi va 1-o'ringa ko'tarildi! Yangi tartib: {MODELS}")
+        logger.info(f"🚀 Model {model} 1-o'ringa ko'tarildi: {MODELS}")
 
 
 def _demote_model(model: str):
-    """Xato bergan yoki qotib qolgan modelni ro'yxat oxiriga tushiradi."""
+    """Xato bergan modelni ro'yxat oxiriga tushiradi."""
     global MODELS
     if model in MODELS and len(MODELS) > 1:
         MODELS.remove(model)
         MODELS.append(model)
-        logger.warning(f"⚠️ Model {model} muammoli bo'lgani sababli oxiriga surildi. Yangi tartib: {MODELS}")
+        logger.warning(f"⚠️ Model {model} oxiriga surildi: {MODELS}")
 
 
-def _call_gemini(prompt: str, json_mode: bool = False, timeout: int = 12) -> str | None:
-    """Gemini API ga tezkor va adaptiv so'rov yuborish"""
+async def _call_gemini(prompt: str, json_mode: bool = False, timeout: int = 15) -> str | None:
+    """Gemini API ga async va adaptiv so'rov yuborish (event loopni bloklamaydi)"""
     if not GEMINI_API_KEY:
+        logger.warning("GEMINI_API_KEY o'rnatilmagan!")
         return None
+
+    import asyncio
 
     data = {
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"maxOutputTokens": 450}
+        "generationConfig": {"maxOutputTokens": 800}
     }
     if json_mode:
         data["generationConfig"]["response_mime_type"] = "application/json"
 
-    for model in list(MODELS):
-        try:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
-            res = requests.post(url, json=data, timeout=timeout)
-            if res.status_code == 200:
-                result = res.json()
-                candidates = result.get("candidates", [])
-                if candidates:
-                    parts = candidates[0].get("content", {}).get("parts", [])
-                    if parts:
-                        text = parts[0].get("text", "").strip()
-                        if text:
-                            _promote_model(model)
-                            return text
-                _demote_model(model)
-            else:
-                logger.warning(f"Model {model} javob bermadi (status {res.status_code})")
-                _demote_model(model)
-        except Exception as e:
-            logger.warning(f"Model {model} vaqti tugadi yoki xatolik: {e}")
-            _demote_model(model)
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        for model in list(MODELS):
+            for attempt in range(2):  # 503 uchun 1 marta qayta urinish
+                try:
+                    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
+                    res = await client.post(url, json=data)
+                    if res.status_code == 200:
+                        result = res.json()
+                        candidates = result.get("candidates", [])
+                        if candidates:
+                            parts = candidates[0].get("content", {}).get("parts", [])
+                            if parts:
+                                text = parts[0].get("text", "").strip()
+                                if text:
+                                    _promote_model(model)
+                                    return text
+                        _demote_model(model)
+                        break  # Empty response, skip to next model
+                    elif res.status_code == 503 and attempt == 0:
+                        # Vaqtinchalik yuklama — 1.5 soniya kutib qayta urinamiz
+                        logger.info(f"Model {model} band (503), 1.5s kutilmoqda...")
+                        await asyncio.sleep(1.5)
+                        continue
+                    elif res.status_code == 429 and attempt == 0:
+                        # Rate limit — 2 soniya kutib qayta urinamiz
+                        logger.info(f"Model {model} rate limit (429), 2s kutilmoqda...")
+                        await asyncio.sleep(2.0)
+                        continue
+                    else:
+                        logger.warning(f"Model {model} xato (status {res.status_code})")
+                        _demote_model(model)
+                        break
+                except httpx.TimeoutException:
+                    logger.warning(f"Model {model} vaqti tugadi ({timeout}s)")
+                    _demote_model(model)
+                    break
+                except Exception as e:
+                    logger.warning(f"Model {model} xatolik: {e}")
+                    _demote_model(model)
+                    break
 
     return None
 
 
 def _clean_ai_title(raw: str) -> str:
-    """AI qaytargan sarlavhadan markdown, 'Selected:', 'Title:' kabi ortiqcha prefikslarni tozalaydi"""
+    """AI qaytargan sarlavhadan markdown, ortiqcha prefikslarni tozalaydi"""
     if not raw:
         return ""
     t = re.sub(r"(?i)^(?:selected|title|movie|kino\s*nomi|nomi|film|ans|javob)\s*[:*–-]+\s*", "", raw.strip())
@@ -88,10 +108,10 @@ def _clean_ai_title(raw: str) -> str:
     return t.strip(' "\'«»\n.:–-')
 
 
-def ask_ai_for_movie_title(user_query: str) -> dict | None:
+async def ask_ai_for_movie_title(user_query: str) -> dict | None:
     """
     Foydalanuvchi kino syujetini yoki tavsifini yozganda,
-    AI dan kinoning o'zbekcha, inglizcha, ruscha nomlarini va muqobil nomlarini aniqlab berishni so'raydi.
+    AI dan kinoning o'zbekcha, inglizcha, ruscha nomlarini aniqlab beradi.
     """
     prompt = f"""Sen jahon kinosining eng kuchli ekspertisan.
 Foydalanuvchi yozgan tavsif, syujet yoki parcha qaysi filmga tegishli ekanligini aniqla.
@@ -107,9 +127,8 @@ Hech qanday boshqa izohsiz, to'g'ridan-to'g'ri FAQAT quyidagi JSON formatida jav
 Foydalanuvchi yozgan matn: "{user_query}"
 """
 
-    ans = _call_gemini(prompt)
+    ans = await _call_gemini(prompt)
     if ans:
-        # JSON parsing
         try:
             m = re.search(r'\{[\s\S]*"title_uz"[\s\S]*\}', ans)
             if m:
@@ -120,7 +139,7 @@ Foydalanuvchi yozgan matn: "{user_query}"
                     ru = _clean_ai_title(data.get("title_ru", ""))
                     year = data.get("year")
                     alts = [_clean_ai_title(a) for a in data.get("alt_titles", []) if _clean_ai_title(a)]
-                    
+
                     if uz.lower() not in ["o'zbekcha nomi", "kino nomi", "...", "nomi", "oʻzbekcha nomi"] and (uz or en or ru):
                         res = {
                             "title_uz": uz or en or ru,
@@ -154,7 +173,7 @@ Foydalanuvchi yozgan matn: "{user_query}"
     return None
 
 
-def ask_ai_universal(
+async def ask_ai_universal(
     user_message: str,
     user_name: str = "Foydalanuvchi",
     chat_title: str = None,
@@ -162,10 +181,7 @@ def ask_ai_universal(
     post_context: str = None
 ) -> dict:
     """
-    Har qanday savol, suhbat yoki kino so'rovini tahlil qiluvchi Universal AI:
-    1. Kino qidiruvi (syujet, tavsif, nom)
-    2. Tavsiya so'rovi (kayfiyat, janr)
-    3. Har qanday dunyoviy, kinoga oid, botga oid yoki erkin mavzudagi savol/suhbat
+    Har qanday savol, suhbat yoki kino so'rovini tahlil qiluvchi Universal AI.
     """
     context_info = []
     if chat_title:
@@ -211,7 +227,7 @@ Foydalanuvchi ismi: {user_name}
 Foydalanuvchi xabari: "{user_message}"
 """
 
-    ans = _call_gemini(prompt, json_mode=True)
+    ans = await _call_gemini(prompt, json_mode=True)
     if ans:
         try:
             m = re.search(r'\{[\s\S]*\}', ans)
@@ -223,14 +239,14 @@ Foydalanuvchi xabari: "{user_message}"
             logger.warning(f"Universal AI parse xatosi: {e}")
 
     # Fallback
-    raw_chat = ask_ai_admin_assistant(user_message, user_name, chat_title, is_channel_comment, post_context)
+    raw_chat = await ask_ai_admin_assistant(user_message, user_name, chat_title, is_channel_comment, post_context)
     if raw_chat:
         return {"type": "chat", "text": raw_chat}
 
     return {"type": "chat", "text": f"Assalomu alaykum, <b>{user_name}</b>! Sizga qanday yordam bera olaman? Kino nomi yoki kodini yozing, darhol topib beraman! 😊"}
 
 
-def ask_ai_admin_assistant(
+async def ask_ai_admin_assistant(
     user_message: str,
     user_name: str = "Foydalanuvchi",
     chat_title: str = None,
@@ -239,7 +255,6 @@ def ask_ai_admin_assistant(
 ) -> str | None:
     """
     Kanal admini nomidan foydalanuvchilar bilan samimiy, aqlli va professional muloqot qiladi.
-    Botda, guruhlarda va kanaldagi postlarga yozilgan kommentlarda ishlaydi.
     """
     context_info = []
     if chat_title:
@@ -257,11 +272,11 @@ Foydalanuvchi bilan xuddi kanal admini kabi samimiy, xushmuomala, professional v
 BOT VA KANAL QOIDALARI:
 1. Kinoni botdan olish: Foydalanuvchi kino kodini botga yuborishi kerak (masalan, 243).
 2. Kino qidirish: Kino nomini yozish kifoya (masalan, "Astral" yoki "kino Astral").
-3. Syujet bo'yicha topish: "kinochi ..." deb syujetni yozish kerak (masalan: "kinochi bir odam o'rgimchak chaqib oladi").
+3. Syujet bo'yicha topish: "kinochi ..." deb syujetni yozish kerak.
 4. Menyu tugmalari: 🔥 Top kinolar, 🎭 Janrlar bo'yicha, 🎲 Tasodifiy kino.
 5. Agar foydalanuvchi salom bersa, minnatdorchilik bildirsa yoki savol bersa, muloyim javob ber.
-6. Agar foydalanuvchi kanalda yo'q kinoni so'rayotgan bo'lsa yoki admin so'rasa, "Biroz kuting, adminga so'rovingiz yetkazildi, tez orada kanalga yuklab beriladi!" deb tinchlantir.
-7. Javobing ixcham (1-3 jumla), chiroyli va o'zbek tilida Telegram HTML formatida bo'lsin (faqat <b>, <i>, <code> teglaridan foydalanishing mumkin).
+6. Agar foydalanuvchi kanalda yo'q kinoni so'rayotgan bo'lsa, "Biroz kuting, adminga so'rovingiz yetkazildi, tez orada kanalga yuklab beriladi!" deb tinchlantir.
+7. Javobing ixcham (1-3 jumla), chiroyli va o'zbek tilida Telegram HTML formatida bo'lsin.
 
 KONTEKST:
 {context_str}
@@ -270,18 +285,16 @@ Foydalanuvchi xabari: "{user_message}"
 
 ADMIN JAVOBI:"""
 
-    ans = _call_gemini(prompt)
+    ans = await _call_gemini(prompt)
     if ans:
-        # Ortiqcha admin prefikslarini tozalash (faqat 'Admin:' yoki 'Javob:' kabi sarlavhalarni)
         ans = re.sub(r"(?i)^(?:admin|javob|uzkino ai)\s*[:*–-]+\s*", "", ans.strip())
         return ans.strip()
     return None
 
 
-def parse_post_with_ai(text: str, message_id: int = None) -> list[dict]:
+async def parse_post_with_ai(text: str, message_id: int = None) -> list[dict]:
     """
     Telegram kanalidagi murakkab postni AI orqali tahlil qiladi.
-    Agar postda kino kodi bo'lsa, uni to'g'ri ajratib beradi.
     """
     prompt = f"""Quyidagi Telegram postini tahlil qil.
 Agar postda bir yoki bir nechta KINO va ularning KODI (kod raqami) bo'lsa, JSON ro'yxat qaytar.
@@ -301,7 +314,7 @@ POST:
 {text}
 """
 
-    ans = _call_gemini(prompt)
+    ans = await _call_gemini(prompt)
     if not ans:
         return []
 
@@ -333,10 +346,9 @@ POST:
     return []
 
 
-def ask_ai_recommend(user_request: str, available_genres: list[str] = None) -> dict | None:
+async def ask_ai_recommend(user_request: str, available_genres: list[str] = None) -> dict | None:
     """
     Foydalanuvchining kayfiyati yoki so'rovi asosida kino janrini va tavsiyasini qaytaradi.
-    Qaytariladigan format: {"genre_keyword": "janr so'zi", "reason": "sababining qisqacha matni"}
     """
     genres_hint = ", ".join(available_genres) if available_genres else "jangari, fantastika, komediya, horror, oilaviy, drama, triller"
     prompt = f"""Sen kino maslahatchisin. Foydalanuvchi kino ko'rmoqchi va quyidagicha yozdi:
@@ -347,7 +359,7 @@ Foydalanuvchining kayfiyati yoki istagiga qarab, quyidagi janrlar orasidan eng m
 Hech qanday izohsiz, FAQAT JSON formatida javob ber:
 {{"genre_keyword": "tanlangan janr", "reason": "nima uchun shu janr mos (1 jumla, o'zbek tilida)"}}
 """
-    ans = _call_gemini(prompt)
+    ans = await _call_gemini(prompt)
     if not ans:
         return None
     try:
