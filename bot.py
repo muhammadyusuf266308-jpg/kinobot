@@ -562,45 +562,58 @@ async def post_create_code(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     code_num = re.sub(r"[^\d]", "", code_raw)
     ctx.user_data["channel_post"]["code"] = code_num or code_raw
 
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("1080p (Full HD)", callback_data="qual_1080p")],
+        [InlineKeyboardButton("720p (HD)", callback_data="qual_720p")],
+        [InlineKeyboardButton("480p (SD)", callback_data="qual_480p")]
+    ])
     await update.message.reply_html(
-        "3-qadam: <b>Kino sifatini</b> kiriting:\n"
-        "Masalan: <code>1080p</code>, <code>720p HD</code>\n"
-        "<i>(Standart 1080p qoldirish uchun <b>-</b> belgisini yuboring)</i>"
+        "3-qadam: <b>Kino sifatini</b> tanlang yoki qo'lda yozing:",
+        reply_markup=keyboard
     )
     return POST_QUALITY
 
 
 async def post_create_quality(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    val = update.message.text.strip()
+    if update.callback_query:
+        await update.callback_query.answer()
+        val = update.callback_query.data.replace("qual_", "")
+        msg = update.callback_query.message
+    else:
+        val = update.message.text.strip()
+        msg = update.message
+
     ctx.user_data["channel_post"]["quality"] = "1080p" if val == "-" else val
+    # Tilni har doim O'zbek tilida deb belgilaymiz
+    ctx.user_data["channel_post"]["lang"] = "O'zbek tilida"
 
-    await update.message.reply_html(
-        "4-qadam: <b>Kino tilini</b> kiriting:\n"
-        "<i>(Standart <b>O'zbek tilida</b> qoldirish uchun <b>-</b> belgisini yuboring)</i>"
-    )
-    return POST_LANG
-
-
-async def post_create_lang(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    val = update.message.text.strip()
-    ctx.user_data["channel_post"]["lang"] = "O'zbek tilida" if val == "-" else val
-
-    await update.message.reply_html(
-        "5-qadam (oxirgi): <b>Manba</b> (sayt yoki kanal havolasi):\n"
-        "<i>(Agar manba qo'shishni istamasangiz <b>-</b> yoki <b>yo'q</b> deb yozing)</i>"
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⏭ O'tkazib yuborish (Manba yo'q)", callback_data="skip_source")]
+    ])
+    await msg.reply_html(
+        "4-qadam: <b>Manba</b> (sayt yoki kanal havolasi):\n"
+        "<i>Agar manba kerak bo'lmasa, pastdagi tugmani bosing yoki yozib yuboring.</i>",
+        reply_markup=keyboard
     )
     return POST_SOURCE
 
 
 async def post_create_source(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    val = update.message.text.strip()
-    if val.lower() in ["-", "yo'q", "yoq", "none", "no"]:
-        ctx.user_data["channel_post"]["source"] = None
+    if update.callback_query:
+        await update.callback_query.answer()
+        if update.callback_query.data == "skip_source":
+            ctx.user_data["channel_post"]["source"] = None
+        msg = update.callback_query.message
     else:
-        ctx.user_data["channel_post"]["source"] = val
+        val = update.message.text.strip()
+        if val.lower() in ["-", "yo'q", "yoq", "none", "no"]:
+            ctx.user_data["channel_post"]["source"] = None
+        else:
+            ctx.user_data["channel_post"]["source"] = val
+        msg = update.message
 
-    await update.message.reply_html(
-        "6-qadam (oxirgi): <b>Kino uchun rasm yoki video</b> yuboring:\n\n"
+    await msg.reply_html(
+        "5-qadam (oxirgi): <b>Kino uchun rasm yoki video</b> yuboring:\n\n"
         "🖼 <b>Rasm</b> yoki 🎬 <b>Video</b> yuborishingiz mumkin.\n"
         "<i>(Rasmsiz/videosiz faqat matnli post chiqarish uchun <b>-</b> yoki <b>yo'q</b> deb yozing)</i>"
     )
@@ -1626,9 +1639,14 @@ def main():
         states={
             POST_TITLE:   [MessageHandler(filters.TEXT & ~filters.COMMAND, post_create_title)],
             POST_CODE:    [MessageHandler(filters.TEXT & ~filters.COMMAND, post_create_code)],
-            POST_QUALITY: [MessageHandler(filters.TEXT & ~filters.COMMAND, post_create_quality)],
-            POST_LANG:    [MessageHandler(filters.TEXT & ~filters.COMMAND, post_create_lang)],
-            POST_SOURCE:  [MessageHandler(filters.TEXT & ~filters.COMMAND, post_create_source)],
+            POST_QUALITY: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, post_create_quality),
+                CallbackQueryHandler(post_create_quality, pattern="^qual_")
+            ],
+            POST_SOURCE:  [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, post_create_source),
+                CallbackQueryHandler(post_create_source, pattern="^skip_source$")
+            ],
             POST_MEDIA:   [MessageHandler(filters.PHOTO | filters.VIDEO | (filters.TEXT & ~filters.COMMAND), post_create_media)],
             POST_CONFIRM: [CallbackQueryHandler(post_create_confirm, pattern="^post_")],
         },
