@@ -1186,11 +1186,24 @@ async def _show_movie_results(ctx, msg, query: str, results: list[dict], ai_sugg
 
     if len(results) == 1:
         m = results[0]
-        buttons = []
         code_clean = re.sub(r"[^\d]", "", m.get("bot_code", ""))
         bot_url = f"https://t.me/{BOT_USERNAME}?start={code_clean}" if code_clean else f"https://t.me/{BOT_USERNAME}"
-        buttons.append([InlineKeyboardButton("🤖 Kinoni botdan olish", url=bot_url)])
 
+        # Agar so'rov guruhda bo'lsa, to'liq ma'lumot o'rniga qisqa yo'naltiruvchi xabar beramiz
+        if msg.chat.type != "private":
+            buttons = [[InlineKeyboardButton("🤖 Kinoni botdan olish", url=bot_url)]]
+            reply_text = f"🎬 <b>{m.get('title', 'Kino')}</b>\n\nKinoni yuklash yoki ko'rish uchun quyidagi tugmani bosib botga o'ting!"
+            if ai_suggested_title:
+                reply_text = f"🤖 <i>AI aniqlagan kino: <b>{ai_suggested_title}</b></i>\n\n" + reply_text
+            try:
+                await msg.reply_html(reply_text, reply_markup=InlineKeyboardMarkup(buttons))
+            except TelegramError as e:
+                logger.error(f"Group movie redirect error: {e}")
+            return
+
+        # Shaxsiy chat uchun (Private)
+        buttons = []
+        buttons.append([InlineKeyboardButton("🤖 Kinoni botdan olish", url=bot_url)])
         if m.get("channel_msg_id") and CHANNEL_ID:
             uname = str(CHANNEL_ID).lstrip("@")
             url = f"https://t.me/{uname}/{m['channel_msg_id']}"

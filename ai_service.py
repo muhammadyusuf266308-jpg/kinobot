@@ -17,8 +17,10 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
 # Haqiqiy mavjud Google Gemini modellari (eng tezi birinchi)
 MODELS = [
-    "gemini-3.8-flash",
-    "gemini-3.5-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-flash-lite-latest",
+    "gemini-3.8-flash"
 ]
 
 
@@ -88,10 +90,12 @@ async def _call_gemini(prompt: str, json_mode: bool = False, timeout: int = 15) 
                     _promote_model(model)
                     return text
                 except Exception as e:
+                    logger.warning(f"Bir model poygada xato berdi: {e}")
                     pass
             
             tasks = list(pending)
 
+    logger.error("Barcha modellar xato qaytardi yoki javob bera olmadi!")
     return None
 
 
