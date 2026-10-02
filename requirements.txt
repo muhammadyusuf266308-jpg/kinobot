@@ -3,3 +3,4 @@ supabase==2.10.0
 python-dotenv==1.0.1
 telethon==1.45.0
 httpx>=0.27.0
+aiohttp>=3.9.0
