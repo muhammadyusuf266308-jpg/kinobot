@@ -915,6 +915,18 @@ def is_channel_comment_or_discussion(msg) -> tuple[bool, str]:
     return False, ""
 
 
+async def web_app_data_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Foydalanuvchi Web App orqali kino tanlaganda ishlaydi"""
+    data = update.message.web_app_data.data
+    user = update.effective_user
+    msg = update.message
+    
+    db_results = search_movie(data)
+    if db_results:
+        await _show_movie_results(ctx, msg, data, db_results, user=user)
+    else:
+        await msg.reply_text("Kechirasiz, kino topilmadi.")
+
 async def on_user_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     msg  = update.message
     if not msg:
@@ -1543,9 +1555,69 @@ async def on_error(update: object, ctx: ContextTypes.DEFAULT_TYPE):
 #  MAIN
 # ═══════════════════════════════════════════════════════════════
 
+from aiohttp import web
+
+async def start_web_server():
+    app = web.Application()
+
+    async def serve_index(request):
+        return web.FileResponse('webapp/index.html')
+
+    async def serve_ai(request):
+        return web.FileResponse('webapp/ai.html')
+
+    async def api_movies(request):
+        movies = get_cached_movies() or []
+        safe_movies = []
+        for m in movies:
+            safe_movies.append({
+                "id": m.get("id"),
+                "title": m.get("title", ""),
+                "year": m.get("year", ""),
+                "genre": m.get("genre", ""),
+                "bot_code": str(m.get("bot_code", ""))
+            })
+        return web.json_response(safe_movies)
+
+    async def api_ai(request):
+        try:
+            data = await request.json()
+            q = data.get('question', '')
+            ans = await ask_ai_universal(q, user_name="Web_Foydalanuvchi")
+            if ans.get("type") == "movie_search":
+                text = f"Siz izlayotgan kino: {ans.get('title_uz')} (Yili: {ans.get('year')})"
+                return web.json_response({"answer": text})
+            return web.json_response({"answer": ans.get("text", "Tushunmadim.")})
+        except Exception as e:
+            return web.json_response({"answer": "Xatolik yuz berdi."})
+
+    app.router.add_get('/', serve_index)
+    app.router.add_get('/ai', serve_ai)
+    app.router.add_get('/api/movies', api_movies)
+    app.router.add_post('/api/ai', api_ai)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    
+    port = int(os.environ.get("PORT", 8080))
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+    logger.info(f"🌐 Web server ishga tushdi (Port: {port})")
+
 async def post_init(application):
     """Bot ishga tushganda Telegram buyruqlar menyusini o'rnatadi"""
     bot = application.bot
+    import asyncio
+    asyncio.create_task(start_web_server())
+
+    railway_domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "")
+    if railway_domain:
+        from telegram import MenuButtonWebApp, WebAppInfo
+        web_url = f"https://{railway_domain}"
+        try:
+            await bot.set_chat_menu_button(menu_button=MenuButtonWebApp(text="🎬 Kinolar", web_app=WebAppInfo(url=web_url)))
+        except Exception as e:
+            logger.warning(f"Menyu tugmasini o'rnatishda xato: {e}")
 
     # Oddiy foydalanuvchilar uchun buyruqlar (/ bosganda ko'rinadi)
     user_commands = [
@@ -1604,6 +1676,19 @@ async def post_init(application):
 
     logger.info("✅ Bot buyruqlari menyusi o'rnatildi.")
 
+
+async def cmd_webapp(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
+    railway_domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "")
+    if not railway_domain:
+        await update.message.reply_text("Serverda domen topilmadi. (RAILWAY_PUBLIC_DOMAIN)")
+        return
+    
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("🎬 Kino Katalogi", web_app=WebAppInfo(url=f"https://{railway_domain}")),
+        InlineKeyboardButton("🤖 AI Chat", web_app=WebAppInfo(url=f"https://{railway_domain}/ai"))
+    ]])
+    await update.message.reply_html("Quyidagi tugmalardan birini tanlab Web App'ni oching:", reply_markup=kb)
 
 def main():
     logger.info("🤖 Bot ishga tushmoqda...")
@@ -1689,9 +1774,10 @@ def main():
     app.add_handler(CommandHandler("random",     cmd_random))
     app.add_handler(CommandHandler("genre",      cmd_genre))
     app.add_handler(CommandHandler("ai",         cmd_ai))
-
-    # ── Callback tugmalar ────────────────────────────────────
+    app.add_handler(CommandHandler("webapp",     cmd_webapp))
+    # ── Callback tugmalar va WebApp ──────────────────────────
     app.add_handler(CallbackQueryHandler(on_callback_query))
+    app.add_handler(MessageHandler(filters.StatusUpdate.WEB_APP_DATA, web_app_data_handler))
 
     # ── Kanal postlari (matnli va rasmli/videoli postlar) ──
     app.add_handler(MessageHandler(
