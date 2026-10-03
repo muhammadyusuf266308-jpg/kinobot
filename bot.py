@@ -28,9 +28,9 @@ from database import (
     get_all_movies, delete_movie, movie_exists_by_code, get_stats,
     get_client, get_random_movie, get_movies_by_genre, get_top_movies,
     get_similar_movies, get_most_searched, is_user_admin, add_new_admin,
-    get_all_admins, remove_admin, invalidate_movies_cache
+    get_all_admins, remove_admin, invalidate_movies_cache, get_cached_movies
 )
-from channel_parser import parse_post, parse_post_multiple
+from channel_parser import parse_post, parse_post_multiple, is_placeholder_title
 import channel_sync
 from ai_service import (
     ask_ai_for_movie_title, parse_post_with_ai, ask_ai_recommend,
@@ -115,6 +115,50 @@ def clean_query(text: str) -> str:
     return t or text.strip()
 
 
+# ─── Kino havolalari (Kod / Link / Post turlari) ───────────────
+def is_link_movie(m: dict) -> bool:
+    """Kodi yo'q yozuvlar: Link:<kanal> (alohida kanal) yoki Post:<id> (kanaldagi post)."""
+    return str(m.get("bot_code", "")).startswith(("Link:", "Post:"))
+
+
+def _channel_post_url(msg_id) -> str:
+    cid = str(CHANNEL_ID).strip()
+    if cid.lstrip("-").isdigit():
+        internal = cid[4:] if cid.startswith("-100") else cid.lstrip("-")
+        return f"https://t.me/c/{internal}/{msg_id}"
+    return f"https://t.me/{cid.lstrip('@')}/{msg_id}"
+
+
+def movie_bot_url(m: dict) -> str:
+    """Kinoni olish tugmasi manzili: botga deep-link yoki to'g'ridan-to'g'ri kanal/post havolasi."""
+    code = str(m.get("bot_code", "") or "")
+    if code.startswith("Link:"):
+        return f"https://t.me/{code[5:]}"
+    if code.startswith("Post:"):
+        return _channel_post_url(m.get("channel_msg_id") or code[5:])
+    digits = re.sub(r"[^\d]", "", code)
+    return f"https://t.me/{BOT_USERNAME}?start={digits}" if digits else f"https://t.me/{BOT_USERNAME}"
+
+
+def movie_code_label(m: dict) -> str:
+    """Foydalanuvchiga ko'rsatiladigan kod matni."""
+    code = str(m.get("bot_code", "") or "")
+    if code.startswith("Link:"):
+        return "@" + code[5:]
+    if code.startswith("Post:"):
+        return "kanaldagi post"
+    return code
+
+
+def movie_button_text(m: dict, default: str = "🤖 Kinoni botdan olish") -> str:
+    code = str(m.get("bot_code", "") or "")
+    if code.startswith("Link:"):
+        return "📺 Kanalga o'tish"
+    if code.startswith("Post:"):
+        return "📺 Kanaldagi postni ochish"
+    return default
+
+
 def format_multiple_movies(results: list[dict], query: str, ai_suggested_title: str = None) -> tuple[str, InlineKeyboardMarkup]:
     """Bir nechta kino topilganda chiroyli ro'yxat va tugmalar yaratadi"""
     lines = []
@@ -126,14 +170,13 @@ def format_multiple_movies(results: list[dict], query: str, ai_suggested_title: 
     buttons = []
     for idx, m in enumerate(results[:6], 1):
         title = m.get("title", "Nomsiz")
-        code = m.get("bot_code", "")
-        code_clean = re.sub(r"[^\d]", "", code)
+        code = movie_code_label(m)
         year_str = f" ({m['year']})" if m.get("year") else ""
 
         lines.append(f"<b>{idx}. 🎬 {title}{year_str}</b>  👉  <code>{code}</code>")
 
-        bot_url = f"https://t.me/{BOT_USERNAME}?start={code_clean}" if code_clean else f"https://t.me/{BOT_USERNAME}"
-        btn_text = f"🤖 {idx}. {title[:20]} ({code})"
+        bot_url = movie_bot_url(m)
+        btn_text = f"{'🤖' if not is_link_movie(m) else '📺'} {idx}. {title[:20]} ({code})"
         row = [InlineKeyboardButton(btn_text, url=bot_url)]
 
         if m.get("channel_msg_id") and CHANNEL_ID:
@@ -158,9 +201,12 @@ def movie_card(m: dict) -> str:
         lines.append(f"🇺🇿 <b>Tili:</b> {m['genre']}")
     if m.get("description"):
         lines.append(f"\n{m['description']}")
-    lines.append(f"\n📥 <b>Kino olish uchun botga yuboring:</b>")
-    lines.append(f"<code>{m['bot_code']}</code>")
-    lines.append(f"🤖 @{BOT_USERNAME}")
+    if is_link_movie(m):
+        lines.append(f"\n📺 <b>Ko'rish uchun:</b> {movie_code_label(m)}")
+    else:
+        lines.append(f"\n📥 <b>Kino olish uchun botga yuboring:</b>")
+        lines.append(f"<code>{m['bot_code']}</code>")
+        lines.append(f"🤖 @{BOT_USERNAME}")
     return "\n".join(lines)
 
 
@@ -242,7 +288,7 @@ def format_similar_movies(similars: list[dict]) -> str:
         return ""
     lines = ["\n\n💡 <b>Sizga yana yoqishi mumkin:</b>"]
     for m in similars[:4]:
-        code = m.get("bot_code", "")
+        code = movie_code_label(m)
         yr = f" ({m['year']})" if m.get("year") else ""
         lines.append(f"  • <b>{m['title']}{yr}</b>  👉  <code>{code}</code>")
     return "\n".join(lines)
@@ -270,10 +316,9 @@ async def on_callback_query(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 btns = []
                 for m in movies[:8]:
                     yr = f" ({m['year']})" if m.get("year") else ""
-                    code = m.get("bot_code", "")
-                    code_num = re.sub(r"[^\d]", "", code)
+                    code = movie_code_label(m)
                     lines.append(f"🎬 <b>{m['title']}{yr}</b>  👉  <code>{code}</code>")
-                    bot_url = f"https://t.me/{BOT_USERNAME}?start={code_num}" if code_num else f"https://t.me/{BOT_USERNAME}"
+                    bot_url = movie_bot_url(m)
                     btns.append([InlineKeyboardButton(f"🤖 {m['title'][:25]} ({code})", url=bot_url)])
                 btns.append([InlineKeyboardButton("🎭 Boshqa janr", callback_data="show_genres")])
                 await q.message.reply_html(
@@ -302,10 +347,7 @@ async def on_callback_query(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         m = get_random_movie()
         if m:
             buttons = []
-            code_clean = re.sub(r"[^\d]", "", m.get("bot_code", ""))
-            if code_clean:
-                bot_url = f"https://t.me/{BOT_USERNAME}?start={code_clean}"
-                buttons.append([InlineKeyboardButton("🤖 Kinoni olish", url=bot_url)])
+            buttons.append([InlineKeyboardButton(movie_button_text(m, "🤖 Kinoni olish"), url=movie_bot_url(m))])
             if m.get("channel_msg_id") and CHANNEL_ID:
                 uname = str(CHANNEL_ID).lstrip("@")
                 url   = f"https://t.me/{uname}/{m['channel_msg_id']}"
@@ -986,12 +1028,11 @@ async def on_user_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         results_c = search_movie(query_c)
         if results_c:
             m = results_c[0]
-            code_clean = re.sub(r"[^\d]", "", m.get("bot_code", ""))
-            bot_url = f"https://t.me/{BOT_USERNAME}?start={code_clean}" if code_clean else f"https://t.me/{BOT_USERNAME}"
-            btn = InlineKeyboardMarkup([[InlineKeyboardButton("🤖 Kinoni botdan olish", url=bot_url)]])
+            bot_url = movie_bot_url(m)
+            btn = InlineKeyboardMarkup([[InlineKeyboardButton(movie_button_text(m), url=bot_url)]])
             await msg.reply_html(
                 f"🎬 <b>{m['title']}</b>\n"
-                f"Kino kodi: <code>{m.get('bot_code')}</code>\n\n"
+                f"Kino kodi: <code>{movie_code_label(m)}</code>\n\n"
                 f"Kinoni quyidagi havola orqali botdan yuklab olishingiz mumkin 👇",
                 reply_markup=btn,
                 disable_web_page_preview=True
@@ -1007,12 +1048,11 @@ async def on_user_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             ai_movies, _ = _search_ai_title(ai_res)
             if ai_movies:
                 m = ai_movies[0]
-                code_clean = re.sub(r"[^\d]", "", m.get("bot_code", ""))
-                bot_url = f"https://t.me/{BOT_USERNAME}?start={code_clean}" if code_clean else f"https://t.me/{BOT_USERNAME}"
-                btn = InlineKeyboardMarkup([[InlineKeyboardButton("🤖 Kinoni botdan olish", url=bot_url)]])
+                bot_url = movie_bot_url(m)
+                btn = InlineKeyboardMarkup([[InlineKeyboardButton(movie_button_text(m), url=bot_url)]])
                 await msg.reply_html(
                     f"🎬 <b>{m['title']}</b>\n"
-                    f"Kino kodi: <code>{m.get('bot_code')}</code>\n\n"
+                    f"Kino kodi: <code>{movie_code_label(m)}</code>\n\n"
                     f"Kinoni quyidagi havola orqali botdan yuklab olishingiz mumkin 👇",
                     reply_markup=btn,
                     disable_web_page_preview=True
@@ -1174,12 +1214,9 @@ async def on_user_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             btns = []
             for mv in movies[:6]:
                 yr = f" ({mv['year']})" if mv.get("year") else ""
-                code = mv.get("bot_code", "")
-                code_num = re.sub(r"[^\d]", "", code)
+                code = movie_code_label(mv)
                 lines.append(f"🎬 <b>{mv['title']}{yr}</b>  👉  <code>{code}</code>")
-                if code_num:
-                    bot_url = f"https://t.me/{BOT_USERNAME}?start={code_num}"
-                    btns.append([InlineKeyboardButton(f"▶️ {mv['title'][:30]}", url=bot_url)])
+                btns.append([InlineKeyboardButton(f"▶️ {mv['title'][:30]}", url=movie_bot_url(mv))])
             btns.append([InlineKeyboardButton("🎭 Boshqa janr tanlash", callback_data="show_genres")])
             await msg.reply_html(
                 "\n".join(lines),
@@ -1214,13 +1251,15 @@ async def _show_movie_results(ctx, msg, query: str, results: list[dict], ai_sugg
 
     if len(results) == 1:
         m = results[0]
-        code_clean = re.sub(r"[^\d]", "", m.get("bot_code", ""))
-        bot_url = f"https://t.me/{BOT_USERNAME}?start={code_clean}" if code_clean else f"https://t.me/{BOT_USERNAME}"
+        bot_url = movie_bot_url(m)
 
         # Agar so'rov guruhda bo'lsa, to'liq ma'lumot o'rniga qisqa yo'naltiruvchi xabar beramiz
         if msg.chat.type != "private":
-            buttons = [[InlineKeyboardButton("🤖 Kinoni botdan olish", url=bot_url)]]
-            reply_text = f"🎬 <b>{m.get('title', 'Kino')}</b>\n\nKinoni yuklash yoki ko'rish uchun quyidagi tugmani bosib botga o'ting!"
+            buttons = [[InlineKeyboardButton(movie_button_text(m), url=bot_url)]]
+            if is_link_movie(m):
+                reply_text = f"🎬 <b>{m.get('title', 'Kino')}</b>\n\nKinoni ko'rish uchun quyidagi tugmani bosing 👇"
+            else:
+                reply_text = f"🎬 <b>{m.get('title', 'Kino')}</b>\n\nKinoni yuklash yoki ko'rish uchun quyidagi tugmani bosib botga o'ting!"
             if ai_suggested_title:
                 reply_text = f"🤖 <i>AI aniqlagan kino: <b>{ai_suggested_title}</b></i>\n\n" + reply_text
             try:
@@ -1231,8 +1270,8 @@ async def _show_movie_results(ctx, msg, query: str, results: list[dict], ai_sugg
 
         # Shaxsiy chat uchun (Private)
         buttons = []
-        buttons.append([InlineKeyboardButton("🤖 Kinoni botdan olish", url=bot_url)])
-        if m.get("channel_msg_id") and CHANNEL_ID:
+        buttons.append([InlineKeyboardButton(movie_button_text(m), url=bot_url)])
+        if m.get("channel_msg_id") and CHANNEL_ID and not str(m.get("bot_code", "")).startswith("Post:"):
             uname = str(CHANNEL_ID).lstrip("@")
             url = f"https://t.me/{uname}/{m['channel_msg_id']}"
             buttons.append([InlineKeyboardButton("📺 Kanaldagi postni ko'rish", url=url)])
@@ -1273,6 +1312,21 @@ async def _show_movie_results(ctx, msg, query: str, results: list[dict], ai_sugg
 #  KANAL POSTLARI
 # ═══════════════════════════════════════════════════════════════
 
+def _should_save_parsed(parsed: dict, is_edit: bool) -> bool:
+    """Yangi kodni saqlaymiz. Mavjud kod: faqat tahrirlangan postda yoki vaqtincha nom ("Kino #123")
+    haqiqiy nom bilan almashtirilayotgan bo'lsa yangilaymiz."""
+    code = parsed["bot_code"]
+    if not movie_exists_by_code(code):
+        return True
+    new_is_placeholder = is_placeholder_title(parsed["title"])
+    if is_edit:
+        return not new_is_placeholder
+    if new_is_placeholder:
+        return False
+    existing = next((m for m in get_cached_movies() if m.get("bot_code") == code), None)
+    return bool(existing and is_placeholder_title(existing.get("title")))
+
+
 async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     post = update.channel_post or update.edited_channel_post
     is_edit = update.edited_channel_post is not None
@@ -1282,8 +1336,18 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not text:
         return
     
-    # Ro'yxat yoki yakka post
-    movies_list = parse_post_multiple(text, message_id=post.message_id)
+    # Media (video/rasm) bormi va fayl nomi - kodsiz yoki nomsiz postlarni tushunish uchun kerak
+    has_media = bool(post.photo or post.video or post.document or post.animation)
+    media_name = None
+    for att in (post.video, post.document, post.animation, post.audio):
+        if att is not None and getattr(att, "file_name", None):
+            media_name = att.file_name
+            break
+
+    # Ro'yxat, kanal havolalari ro'yxati yoki yakka post
+    movies_list = parse_post_multiple(
+        text, message_id=post.message_id, has_media=has_media, media_name=media_name
+    )
     if not movies_list:
         try:
             movies_list = await parse_post_with_ai(text, message_id=post.message_id)
@@ -1296,8 +1360,7 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     added_count = 0
     first_title = ""
     for parsed in movies_list:
-        # Yangi postda mavjud kodni o'tkazib yuboramiz; tahrirlangan postda esa yangilaymiz
-        if not is_edit and movie_exists_by_code(parsed["bot_code"]):
+        if not _should_save_parsed(parsed, is_edit):
             continue
         add_movie(**{k: parsed[k] for k in
                      ["title", "bot_code", "title_ru", "title_en",
@@ -1421,14 +1484,17 @@ async def cmd_cleansync(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_sync(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Admin: /sync – kanalni boshidan oxirigacha o'qib, yangi kinolarni bazaga qo'shadi.
-    /sync ai – kodi bor, lekin oddiy parser tushunmagan eski postlarni ham AI bilan tekshiradi."""
+    /sync full – bazada bor postlarni ham qayta tahlil qilib, yozuvlarni yangilaydi.
+    /sync ai   – kodi bor, lekin oddiy parser tushunmagan eski postlarni ham AI bilan tekshiradi."""
     if not is_user_admin(update.effective_user.id, ADMIN_ID):
         return
     if channel_sync.is_running():
         await update.message.reply_text("⏳ Sinxronizatsiya allaqachon ketmoqda, tugashini kuting.")
         return
 
-    deep_ai = bool(ctx.args and ctx.args[0].lower() == "ai")
+    args_l = [a.lower() for a in (ctx.args or [])]
+    deep_ai = "ai" in args_l
+    refresh = "full" in args_l
     msg = await update.message.reply_html("🔄 <b>Kanal o'qilmoqda...</b>")
     last_edit = [0.0]
 
@@ -1448,12 +1514,15 @@ async def cmd_sync(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     async def runner():
         try:
-            st = await channel_sync.sync_channel(deep_ai=deep_ai, progress=progress)
+            st = await channel_sync.sync_channel(deep_ai=deep_ai, refresh=refresh, progress=progress)
             text = (
                 "✅ <b>Sinxronizatsiya tugadi!</b>\n\n"
                 f"📨 Ko'rilgan postlar: {st['scanned']}\n"
                 f"⏭ Avvaldan bazada bor postlar: {st['skipped_known']}\n"
-                f"🆕 <b>Yangi qo'shilgan kinolar: {st['new']}</b>\n"
+                f"🆕 <b>Yangi qo'shilgan: {st['new']}</b> "
+                f"(kodli: {st['by_type']['kod']}, kanal havolali: {st['by_type']['link']}, "
+                f"faqat nomli post: {st['by_type']['post']})\n"
+                f"✏️ Yangilangan: {st['updated']}\n"
                 f"🤖 AI topgan postlar: {st['ai_posts']}\n"
                 f"♻️ Dublikat kodlar: {st['duplicates']}\n"
                 f"⏱ Vaqt: {st['seconds']} soniya"
@@ -1550,10 +1619,7 @@ async def cmd_random(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_html("😕 Hozircha bazada kinolar yo'q.")
         return
     buttons = []
-    code_clean = re.sub(r"[^\d]", "", m.get("bot_code", ""))
-    if code_clean:
-        bot_url = f"https://t.me/{BOT_USERNAME}?start={code_clean}"
-        buttons.append([InlineKeyboardButton("🤖 Kinoni olish", url=bot_url)])
+    buttons.append([InlineKeyboardButton(movie_button_text(m, "🤖 Kinoni olish"), url=movie_bot_url(m))])
     if m.get("channel_msg_id") and CHANNEL_ID:
         uname = str(CHANNEL_ID).lstrip("@")
         url   = f"https://t.me/{uname}/{m['channel_msg_id']}"
