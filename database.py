@@ -147,6 +147,15 @@ def _is_whole_word_match(query: str, title: str) -> bool:
     return bool(re.search(pattern, norm_t))
 
 
+_SEASON_NUM_RE = re.compile(r"(?:(\d{1,2})\s*(?:fasl|mavsum|sezon|season|qism|part)|(?:fasl|mavsum|sezon|season|qism|part)\s*(\d{1,2}))")
+
+
+def _season_number(norm_text: str) -> str | None:
+    """'lutsifer 2 fasl' yoki 'lutsifer fasl 2' -> '2'"""
+    m = _SEASON_NUM_RE.search(norm_text or "")
+    return (m.group(1) or m.group(2)) if m else None
+
+
 def fuzzy_similarity(s1: str, s2: str) -> float:
     """Ikki satr o'rtasidagi o'xshashlik foizi (0.0 dan 1.0 gacha)"""
     if not s1 or not s2:
@@ -195,6 +204,8 @@ def search_movie(query: str) -> list[dict]:
         code_matches = []
         for m in movies:
             b_code = str(m.get("bot_code", ""))
+            if b_code.startswith(("Link:", "Post:")):
+                continue  # bular raqamli kod emas (kanal havolasi / post ID)
             b_clean = re.sub(r"[^\d]", "", b_code)
             if b_clean == c_num or b_code.lower() == f"kod:{c_num}":
                 code_matches.append(m)
@@ -317,6 +328,11 @@ def search_movie(query: str) -> list[dict]:
             final_results.append(item)
 
     if final_results:
+        # "Lutsifer 2 fasl" deb so'ralsa, 2-fasl birinchi chiqsin
+        q_season = _season_number(norm_q)
+        if q_season:
+            final_results.sort(key=lambda it: 0 if _season_number(
+                normalize_title(it.get("title") or "")) == q_season else 1)
         return final_results[:5]
 
     # 3. Faqat kesh bo'sh bo'lgan holatdagina Supabase dan qidiramiz
@@ -396,16 +412,22 @@ def add_movies_bulk(movies: list[dict], chunk_size: int = 200) -> int:
     return saved
 
 
-def get_saved_index() -> tuple[set[str], set[int]]:
-    """Bazadagi barcha bot_code lar va kanal post ID lari (sync dublikat tekshiruvi uchun)."""
+def get_saved_index() -> tuple[set[str], set[int], set[str]]:
+    """
+    Sync uchun: (barcha bot_code lar, barcha kanal post ID lari, nomi vaqtincha ("Kino #123") bo'lgan kodlar).
+    """
     codes: set[str] = set()
     msg_ids: set[int] = set()
-    for r in _fetch_all_rows("bot_code, channel_msg_id"):
-        if r.get("bot_code"):
-            codes.add(r["bot_code"])
+    placeholders: set[str] = set()
+    for r in _fetch_all_rows("bot_code, channel_msg_id, title"):
+        code = r.get("bot_code")
+        if code:
+            codes.add(code)
+            if str(r.get("title") or "").startswith("Kino #"):
+                placeholders.add(code)
         if r.get("channel_msg_id"):
             msg_ids.add(int(r["channel_msg_id"]))
-    return codes, msg_ids
+    return codes, msg_ids, placeholders
 
 
 def get_max_channel_msg_id() -> int:
