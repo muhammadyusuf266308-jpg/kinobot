@@ -15,7 +15,7 @@ from telethon import TelegramClient
 from telethon.errors import FloodWaitError
 from telethon.sessions import StringSession
 
-from channel_parser import parse_post_multiple
+from channel_parser import is_placeholder_title, parse_post_multiple
 from config import API_HASH, API_ID, BOT_TOKEN, CHANNEL_ID, TG_SESSION
 from database import add_movies_bulk, get_max_channel_msg_id, get_saved_index
 
@@ -94,26 +94,29 @@ async def _iter_posts(client: TelegramClient, entity):
         await asyncio.sleep(0.3)
 
 
-async def sync_channel(deep_ai: bool = False, progress=None) -> dict:
+async def sync_channel(deep_ai: bool = False, refresh: bool = False, progress=None) -> dict:
     """
     Kanalni boshidan oxirigacha aylanib chiqadi:
       • bazada bor postlarni o'tkazib yuboradi,
       • yangi postlardan kinolarni ajratib (parser, kerak bo'lsa AI) bazaga saqlaydi.
-    deep_ai=True bo'lsa, eski tushunilmagan postlar ham AI bilan tekshiriladi.
+    deep_ai=True  bo'lsa, eski tushunilmagan postlar ham AI bilan tekshiriladi.
+    refresh=True  bo'lsa, bazada bor postlar ham qaytadan tahlil qilinib, yozuvlar YANGILANADI
+                  (parser yaxshilangandan keyin eski noto'g'ri nomlarni tuzatish uchun).
     """
     global _running
     if _running:
         raise RuntimeError("Sinxronizatsiya allaqachon ketmoqda.")
     _running = True
     started = time.time()
-    stats = {"scanned": 0, "skipped_known": 0, "new": 0, "ai_posts": 0,
-             "duplicates": 0, "errors": 0, "seconds": 0}
+    stats = {"scanned": 0, "skipped_known": 0, "new": 0, "updated": 0, "ai_posts": 0,
+             "duplicates": 0, "errors": 0, "seconds": 0,
+             "by_type": {"kod": 0, "link": 0, "post": 0}}
 
     try:
         client = await _get_client()
         entity = _channel_entity()
 
-        known_codes, known_msg_ids = await asyncio.to_thread(get_saved_index)
+        known_codes, known_msg_ids, placeholders = await asyncio.to_thread(get_saved_index)
         max_saved = await asyncio.to_thread(get_max_channel_msg_id)
 
         parse_ai = None
@@ -131,11 +134,15 @@ async def sync_channel(deep_ai: bool = False, progress=None) -> dict:
                 continue
             stats["scanned"] += 1
 
-            if m.id in known_msg_ids:
+            if m.id in known_msg_ids and not refresh:
                 stats["skipped_known"] += 1
             else:
                 try:
-                    movies = parse_post_multiple(text, message_id=m.id)
+                    has_media = bool(getattr(m, "photo", None) or getattr(m, "video", None)
+                                     or getattr(m, "document", None))
+                    media_name = getattr(getattr(m, "file", None), "name", None)
+                    movies = parse_post_multiple(text, message_id=m.id,
+                                                 has_media=has_media, media_name=media_name)
                     used_ai = False
 
                     # AI faqat yangi postlarda (yoki /sync ai bilan hamma tushunilmaganlarda)
@@ -149,16 +156,34 @@ async def sync_channel(deep_ai: bool = False, progress=None) -> dict:
 
                     fresh = []
                     for mv in movies:
-                        if mv["bot_code"] in known_codes:
+                        code = mv["bot_code"]
+                        is_known = code in known_codes
+                        if is_known and not refresh:
+                            # Faqat vaqtincha nomli ("Kino #123") yozuv haqiqiy nom bilan almashtiriladi
+                            if not (code in placeholders and not is_placeholder_title(mv["title"])):
+                                stats["duplicates"] += 1
+                                continue
+                        # Qayta tahlilda haqiqiy nomni vaqtincha nom bilan almashtirib yubormaymiz
+                        if is_known and refresh and is_placeholder_title(mv["title"]) \
+                                and code not in placeholders:
                             stats["duplicates"] += 1
                             continue
-                        known_codes.add(mv["bot_code"])
+                        if is_known:
+                            stats["updated"] += 1
+                        else:
+                            stats["new"] += 1
+                            kind = code.split(":", 1)[0].lower()
+                            stats["by_type"][kind if kind in stats["by_type"] else "kod"] += 1
+                        known_codes.add(code)
+                        if is_placeholder_title(mv["title"]):
+                            placeholders.add(code)
+                        else:
+                            placeholders.discard(code)
                         fresh.append(mv)
 
                     if fresh:
                         if used_ai:
                             stats["ai_posts"] += 1
-                        stats["new"] += len(fresh)
                         buffer.extend(fresh)
                         if len(buffer) >= _SAVE_EVERY:
                             await flush()
