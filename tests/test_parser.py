@@ -59,10 +59,10 @@ class TestSingleMovieParsing:
     def test_parse_kod_variations(self):
         """Test different kod formats"""
         # "Kod:456"
-        assert parse_post("Film\\nKod:456", 1)["bot_code"] == "Kod:456"
+        assert parse_post("Film\nKod:456", 1)["bot_code"] == "Kod:456"
         
         # "kodi: 789"
-        assert parse_post("Film\\nkodi: 789", 1)["bot_code"] == "Kod:789"
+        assert parse_post("Film\nkodi: 789", 1)["bot_code"] == "Kod:789"
         
         # "Film kodi; 111"
         assert parse_post("Film kodi; 111", 1)["bot_code"] == "Kod:111"
@@ -156,7 +156,7 @@ class TestEdgeCases:
     
     def test_title_with_year_in_name(self):
         """Test extracting year from title"""
-        text = "Avatar 2 (2022)\\nKodi: 777"
+        text = "Avatar 2 (2022)\nKodi: 777"
         result = parse_post(text)
         
         assert result is not None
@@ -222,3 +222,54 @@ def test_with_fixture(sample_movie_post):
 if __name__ == "__main__":
     # Run tests
     pytest.main([__file__, "-v"])
+
+
+
+class TestPostFormats:
+    """Kanaldagi haqiqiy post turlari"""
+
+    def test_arrow_format_keeps_season(self):
+        text = ("🎬 ➺ Lutsifer\n🎞 ➺ 1-Fasl\n🇺🇿 ➺ O'zbek Tilida\n🌍 ➺ AQSH filmi\n"
+                "⚔️ ➺ Jangari, fantastika\n\n♻️ Kino kodi: 182\n\nBizning bot:@UzKinoMov1eBot")
+        r = parse_post_multiple(text, 1)
+        assert len(r) == 1
+        assert r[0]["title"] == "Lutsifer 1-Fasl"
+        assert r[0]["bot_code"] == "Kod:182"
+
+    def test_plain_title_with_code(self):
+        r = parse_post_multiple("Yetti qirollik ritsari\n\nKino kodi: 170\n\n📢 Botimiz:\n@UzKinoMov1eBot", 2)
+        assert [(x["title"], x["bot_code"]) for x in r] == [("Yetti qirollik ritsari", "Kod:170")]
+
+    def test_list_with_wrapped_titles(self):
+        text = "RO'YXAT\n\n136 — 🟥 Deadpool\n135 — 🟥 Shang-Chi: O'nta\nUzuk Afsonasi\n134 — 🟥 QORA BEVA\n\nBotga kerakli kodni tashlang"
+        r = parse_post_multiple(text, 3)
+        titles = {x["bot_code"]: x["title"] for x in r}
+        assert titles["Kod:135"] == "Shang-Chi: O'nta Uzuk Afsonasi"
+        assert titles["Kod:134"] == "QORA BEVA"
+
+    def test_channel_link_list(self):
+        text = ("Chuqur 👇\n\n(@chuqur_serial_uzbek_t1lida)\n\n"
+                "Shelbylar oilasi | Thomas Shelby 👇\n\n(@shelbylar_oilas1)")
+        r = parse_post_multiple(text, 4)
+        codes = {x["bot_code"]: x for x in r}
+        assert "Link:chuqur_serial_uzbek_t1lida" in codes
+        assert codes["Link:shelbylar_oilas1"]["title"] == "Shelbylar oilasi"
+        assert codes["Link:shelbylar_oilas1"]["title_en"] == "Thomas Shelby"
+
+    def test_code_only_post(self):
+        r = parse_post_multiple("Kino kodi: 215\n\n📢 Botimiz: @UzKinoMov1eBot", 5)
+        assert r[0]["bot_code"] == "Kod:215"
+        assert r[0]["title"] == "Kino #215"
+
+    def test_code_only_uses_media_filename(self):
+        r = parse_post_multiple("Kino kodi: 99", 6, media_name="Yetti_qirollik_ritsari_720p.mp4")
+        assert r[0]["title"] == "Yetti qirollik ritsari"
+
+    def test_name_only_media_post(self):
+        r = parse_post_multiple("Oppenheimer", 7, has_media=True)
+        assert r[0]["bot_code"] == "Post:7"
+        assert r[0]["title"] == "Oppenheimer"
+
+    def test_name_only_requires_media_and_rejects_ads(self):
+        assert parse_post_multiple("Oppenheimer", 8) == []
+        assert parse_post_multiple("Obuna bo'ling, konkurs!", 9, has_media=True) == []
