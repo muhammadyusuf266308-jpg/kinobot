@@ -367,11 +367,24 @@ def add_movie(title: str, bot_code: str, title_ru: str = None, title_en: str = N
     }
 
     try:
-        res = (
-            client.table("movies")
-            .upsert(data, on_conflict="bot_code")
-            .execute()
-        )
+        try:
+            res = (
+                client.table("movies")
+                .upsert(data, on_conflict="bot_code")
+                .execute()
+            )
+        except Exception as e:
+            if 'poster_url' in str(e) or 'does not exist' in str(e):
+                logger.warning('poster_url ustuni yoq! Unsiz saqlashga urinish...')
+                data.pop('poster_url', None)
+                data.pop('tmdb_rating', None)
+                res = (
+                    client.table("movies")
+                    .upsert(data, on_conflict="bot_code")
+                    .execute()
+                )
+            else:
+                raise e
         new_id = res.data[0]["id"] if res.data else 0
         invalidate_movies_cache()
         logger.info(f"🎬 Saqlandi: '{title}' → {bot_code} (ID={new_id})")
