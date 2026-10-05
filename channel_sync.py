@@ -86,15 +86,24 @@ async def _iter_posts(client, entity):
         ids = list(range(start, start + _BATCH_IDS))
         try:
             msgs = await client.get_messages(entity, ids=ids)
+            for m in msgs:
+                if m is not None and getattr(m, "id", None):
+                    yield m
+            start += _BATCH_IDS
+            await asyncio.sleep(0.3)
         except Exception as e:
-            await asyncio.sleep(2)
-            continue
-            
-        for m in msgs:
-            if m is not None and getattr(m, "id", None):
-                yield m
-        start += _BATCH_IDS
-        await asyncio.sleep(0.3)
+            err_msg = str(e).lower()
+            if 'flood' in err_msg:
+                # Flood wait - kutamiz
+                import re as regex
+                sec_match = regex.search(r'\d+', err_msg)
+                wait_sec = int(sec_match.group()) if sec_match else 5
+                logger.warning(f"Flood wait {wait_sec} soniya...")
+                await asyncio.sleep(wait_sec + 2)
+            else:
+                logger.warning(f"get_messages xatosi ({start}): {e}")
+                start += _BATCH_IDS  # O'tkazib yuboramiz va davom etamiz, cheksiz tsikl bo'lmasligi uchun
+                await asyncio.sleep(1)
 
 
 async def sync_channel(deep_ai: bool = False, refresh: bool = False, progress=None) -> dict:
