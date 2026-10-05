@@ -766,3 +766,18 @@ def get_most_searched(limit: int = 10) -> list[dict]:
     except Exception as e:
         logger.error(f"get_most_searched xatosi: {e}")
         return []
+
+
+def get_all_users() -> list[int]:
+    """Barcha faol foydalanuvchilarning IDlarini qaytaradi (search_log asosida)"""
+    client = get_client()
+    if not client:
+        return []
+    try:
+        res = client.table("search_log").select("user_id").execute()
+        if res and res.data:
+            user_ids = {row["user_id"] for row in res.data if row.get("user_id")}
+            return list(user_ids)
+    except Exception as e:
+        logger.error(f"get_all_users xatosi: {e}")
+    return []

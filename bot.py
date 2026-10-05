@@ -1749,6 +1749,7 @@ async def post_init(application):
         BotCommand("addadmin", "👤 Yangi admin qo'shish"),
         BotCommand("admins", "👥 Adminlar ro'yxati"),
         BotCommand("deladmin", "❌ Adminni o'chirish"),
+        BotCommand("broadcast", "📣 Barchaga xabar yuborish"),
         BotCommand("panel", "📢 Guruhga qidiruv tugmasi"),
         BotCommand("top", "🔥 Top kinolar"),
         BotCommand("random", "🎲 Tasodifiy kino"),
@@ -1796,6 +1797,103 @@ async def cmd_webapp(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         InlineKeyboardButton("🤖 AI Chat", web_app=WebAppInfo(url=f"https://{railway_domain}/ai"))
     ]])
     await update.message.reply_html("Quyidagi tugmalardan birini tanlab Web App'ni oching:", reply_markup=kb)
+
+# ═══════════════════════════════════════════════════════════════
+#  BROADCAST (Xabar tarqatish)
+# ═══════════════════════════════════════════════════════════════
+async def cmd_broadcast(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Admin barcha foydalanuvchilarga xabar yuboradi"""
+    if not is_user_admin(update.effective_user.id, ADMIN_ID):
+        return
+        
+    msg = update.message
+    reply = msg.reply_to_message
+    
+    # Agar reply bo'lsa, shu xabarni uzatamiz, aks holda yozilgan matnni
+    if reply:
+        message_to_send = reply
+    else:
+        text = msg.text.replace("/broadcast", "").strip()
+        if not text:
+            await msg.reply_text("Iltimos, yuboriladigan xabarni /broadcast dan keyin yozing yoki biror xabarga reply qilib /broadcast deng.")
+            return
+        message_to_send = text
+
+    from database import get_all_users
+    import asyncio
+    
+    users = get_all_users()
+    if not users:
+        await msg.reply_text("Bazada foydalanuvchilar topilmadi.")
+        return
+        
+    await msg.reply_text(f"🚀 Xabar {len(users)} ta foydalanuvchiga yuborilmoqda. Iltimos kuting...")
+    
+    success = 0
+    fail = 0
+    for uid in users:
+        try:
+            if reply:
+                await reply.copy(uid)
+            else:
+                await ctx.bot.send_message(chat_id=uid, text=message_to_send, parse_mode=ParseMode.HTML)
+            success += 1
+        except Exception:
+            fail += 1
+        await asyncio.sleep(0.05) # Telegram API limitlaridan qochish uchun
+        
+    await msg.reply_text(f"✅ Tarqatish yakunlandi!\n\nYetib bordi: {success} ta\nYetib bormadi (bloklagan): {fail} ta")
+
+
+# ═══════════════════════════════════════════════════════════════
+#  INLINE QIDIRUV (Boshqa chatlar uchun)
+# ═══════════════════════════════════════════════════════════════
+async def inline_query(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Foydalanuvchi istalgan chatda @bot_username bilan kino izlaganda ishlaydi"""
+    query = update.inline_query.query.strip()
+    if not query:
+        return
+
+    from telegram import InlineQueryResultArticle, InputTextMessageContent
+    import uuid
+    from database import search_movie
+
+    db_results = search_movie(query)
+    results = []
+    
+    for m in db_results[:15]:
+        bot_url = movie_bot_url(m)
+        title = str(m.get("title", "Kino"))
+        year = str(m.get("year", ""))
+        genre = str(m.get("genre", ""))
+        
+        desc = f"Yili: {year} | Janri: {genre}"
+        
+        msg_text = (
+            f"🎬 <b>{html_mod.escape(title)}</b>\n\n"
+            f"🎭 Janri: {html_mod.escape(genre)}\n"
+            f"📅 Yili: {year}\n\n"
+            f"📥 <i>Kinoni yuklab olish yoki ko'rish uchun quyidagi tugmani bosing:</i>"
+        )
+        
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton(movie_button_text(m, "🤖 Kinoni botdan olish"), url=bot_url)
+        ]])
+        
+        results.append(
+            InlineQueryResultArticle(
+                id=str(uuid.uuid4()),
+                title=title,
+                description=desc,
+                input_message_content=InputTextMessageContent(msg_text, parse_mode=ParseMode.HTML),
+                reply_markup=kb
+            )
+        )
+        
+    try:
+        await update.inline_query.answer(results, cache_time=10, is_personal=False)
+    except Exception as e:
+        logger.error(f"Inline qidiruvda xato: {e}")
 
 def main():
     logger.info("🤖 Bot ishga tushmoqda...")
@@ -1882,9 +1980,13 @@ def main():
     app.add_handler(CommandHandler("genre",      cmd_genre))
     app.add_handler(CommandHandler("ai",         cmd_ai))
     app.add_handler(CommandHandler("webapp",     cmd_webapp))
+    app.add_handler(CommandHandler("broadcast",  cmd_broadcast))
     # ── Callback tugmalar va WebApp ──────────────────────────
     app.add_handler(CallbackQueryHandler(on_callback_query))
     app.add_handler(MessageHandler(filters.StatusUpdate.WEB_APP_DATA, web_app_data_handler))
+    
+    from telegram.ext import InlineQueryHandler
+    app.add_handler(InlineQueryHandler(inline_query))
 
     # ── Kanal postlari (matnli va rasmli/videoli postlar) ──
     app.add_handler(MessageHandler(
