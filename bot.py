@@ -1870,8 +1870,7 @@ async def cmd_broadcast(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return
         message_to_send = text
 
-    from tmdb_service import fetch_movie_details
-from database import get_all_users
+    from database import get_all_users
     import asyncio
     
     users = get_all_users()
@@ -1908,8 +1907,7 @@ async def inline_query(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     from telegram import InlineQueryResultArticle, InputTextMessageContent
     import uuid
-    from tmdb_service import fetch_movie_details
-from database import search_movie
+    from database import search_movie
 
     db_results = search_movie(query)
     results = []
