@@ -396,9 +396,8 @@ def add_movie(title: str, bot_code: str, title_ru: str = None, title_en: str = N
 
 def add_movies_bulk(movies: list[dict], chunk_size: int = 200) -> int:
     """
-    Ko'p kinoni bitta-bitta emas, bo'laklab (upsert) saqlaydi — sync uchun ancha tez.
-    bot_code bo'yicha dublikatlar olib tashlanadi (oxirgisi qoladi).
-    Qaytaradi: saqlangan kinolar soni.
+    Ko'p kinoni bitta-bitta emas, bo'laklab (upsert) saqlaydi.
+    bot_code bo'yicha dublikatlar olib tashlanadi.
     """
     fields = ("title", "title_ru", "title_en", "year", "genre",
               "description", "bot_code", "channel_msg_id", "poster_url", "tmdb_rating")
@@ -418,7 +417,17 @@ def add_movies_bulk(movies: list[dict], chunk_size: int = 200) -> int:
             client.table("movies").upsert(chunk, on_conflict="bot_code").execute()
             saved += len(chunk)
         except Exception as e:
-            logger.error(f"add_movies_bulk xatosi ({i}-{i + len(chunk)}): {e}")
+            if 'poster_url' in str(e) or '42703' in str(e) or 'does not exist' in str(e):
+                for c in chunk:
+                    c.pop('poster_url', None)
+                    c.pop('tmdb_rating', None)
+                try:
+                    client.table("movies").upsert(chunk, on_conflict="bot_code").execute()
+                    saved += len(chunk)
+                except Exception as e2:
+                    logger.error(f"add_movies_bulk fallback xatosi: {e2}")
+            else:
+                logger.error(f"add_movies_bulk xatosi: {e}")
     invalidate_movies_cache()
     return saved
 
