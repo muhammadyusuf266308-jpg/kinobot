@@ -12,10 +12,12 @@
             background-color: var(--tg-theme-bg-color, #141414);
             color: var(--tg-theme-text-color, #ffffff);
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            padding-bottom: 80px;
         }
         .movie-card {
             background-color: var(--tg-theme-secondary-bg-color, #2a2a2a);
             transition: transform 0.2s;
+            position: relative;
         }
         .movie-card:active {
             transform: scale(0.96);
@@ -23,24 +25,91 @@
         .poster-placeholder {
             background: linear-gradient(135deg, #e50914 0%, #8b0000 100%);
         }
+        .fav-btn {
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            background: rgba(0,0,0,0.6);
+            border-radius: 50%;
+            width: 32px;
+            height: 32px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 10;
+        }
+        .fav-btn.active i {
+            color: #e50914;
+        }
+        .nav-bar {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: #141414;
+            border-top: 1px solid #333;
+            display: flex;
+            justify-content: space-around;
+            padding: 10px 0;
+            z-index: 100;
+        }
+        .nav-item {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            color: #888;
+            font-size: 12px;
+            gap: 4px;
+        }
+        .nav-item.active {
+            color: #e50914;
+        }
     </style>
 </head>
-<body class="antialiased pb-20">
+<body class="antialiased">
     <header class="sticky top-0 z-50 bg-opacity-90 backdrop-blur-md bg-[#141414] p-4 border-b border-gray-800">
-        <h1 class="text-2xl font-bold text-red-600 tracking-wider text-center mb-3">KINO KATALOGI</h1>
+        <h1 class="text-2xl font-bold text-red-600 tracking-wider text-center mb-3">UZ KINO</h1>
+        
         <div class="relative">
-            <input type="text" id="searchInput" placeholder="Kino qidiring..." 
-                   class="w-full bg-gray-800 text-white rounded-full py-2 px-4 pl-10 focus:outline-none focus:ring-2 focus:ring-red-600">
-            <i class="fas fa-search absolute left-3 top-3.5 text-gray-400"></i>
+            <i class="fas fa-search absolute left-3 top-3 text-gray-400"></i>
+            <input type="text" id="searchInput" placeholder="Kino qidirish..." 
+                   class="w-full bg-gray-800 text-white rounded-lg py-2 pl-10 pr-4 outline-none focus:ring-2 focus:ring-red-600">
+        </div>
+
+        <div class="flex gap-2 overflow-x-auto mt-3 pb-1 snap-x scrollbar-hide" id="genreFilters">
+            <button class="snap-start whitespace-nowrap px-4 py-1 rounded-full bg-red-600 text-white text-sm font-medium" onclick="filterGenre('all')">Barchasi</button>
+            <button class="snap-start whitespace-nowrap px-4 py-1 rounded-full bg-gray-800 text-gray-300 text-sm font-medium" onclick="filterGenre('jangari')">Jangari</button>
+            <button class="snap-start whitespace-nowrap px-4 py-1 rounded-full bg-gray-800 text-gray-300 text-sm font-medium" onclick="filterGenre('komediya')">Komediya</button>
+            <button class="snap-start whitespace-nowrap px-4 py-1 rounded-full bg-gray-800 text-gray-300 text-sm font-medium" onclick="filterGenre('dahshat')">Dahshat</button>
+            <button class="snap-start whitespace-nowrap px-4 py-1 rounded-full bg-gray-800 text-gray-300 text-sm font-medium" onclick="filterGenre('fantastika')">Fantastika</button>
         </div>
     </header>
 
-    <div class="flex overflow-x-auto space-x-2 p-4 scrollbar-hide" id="genreFilters">
-        <!-- Genres injected via JS -->
-    </div>
+    <main class="p-4">
+        <div id="loader" class="text-center py-10 text-gray-400">
+            <i class="fas fa-spinner fa-spin text-3xl mb-2 text-red-600"></i>
+            <p>Kinolar yuklanmoqda...</p>
+        </div>
+        
+        <div id="movieGrid" class="grid grid-cols-2 gap-4 hidden">
+            <!-- Movies will be inserted here -->
+        </div>
+        
+        <div id="noResults" class="hidden text-center py-10 text-gray-500">
+            <i class="fas fa-film text-4xl mb-3"></i>
+            <p>Hech narsa topilmadi</p>
+        </div>
+    </main>
 
-    <div class="grid grid-cols-2 gap-4 p-4" id="moviesGrid">
-        <p class="col-span-2 text-center text-gray-400 py-10" id="loadingMsg">Kinolar yuklanmoqda...</p>
+    <div class="nav-bar">
+        <div class="nav-item active" id="tab-home" onclick="switchTab('home')">
+            <i class="fas fa-home text-xl"></i>
+            <span>Bosh sahifa</span>
+        </div>
+        <div class="nav-item" id="tab-fav" onclick="switchTab('fav')">
+            <i class="fas fa-heart text-xl"></i>
+            <span>Saqlanganlar</span>
+        </div>
     </div>
 
     <script>
@@ -49,71 +118,132 @@
         tg.ready();
 
         let allMovies = [];
-        let currentGenre = 'Barchasi';
+        let favMovies = [];
+        let currentTab = 'home';
+        let currentGenre = 'all';
+        const userId = tg.initDataUnsafe?.user?.id || 0;
 
-        const grid = document.getElementById('moviesGrid');
-        const searchInput = document.getElementById('searchInput');
-        const filtersDiv = document.getElementById('genreFilters');
-        const loadingMsg = document.getElementById('loadingMsg');
-
-        async function fetchMovies() {
+        async function init() {
             try {
+                // Fetch all movies
                 const res = await fetch('/api/movies');
                 allMovies = await res.json();
-                loadingMsg.style.display = 'none';
-                renderFilters();
-                renderMovies(allMovies);
+                
+                // Fetch favorites
+                if (userId) {
+                    const fRes = await fetch(`/api/favorites?user_id=${userId}`);
+                    favMovies = await fRes.json();
+                }
+
+                document.getElementById('loader').classList.add('hidden');
+                document.getElementById('movieGrid').classList.remove('hidden');
+                
+                renderMovies();
             } catch (err) {
-                loadingMsg.innerText = "Xatolik yuz berdi :(";
+                document.getElementById('loader').innerHTML = '<p class="text-red-500">Xatolik yuz berdi. Qayta urinib ko\'ring.</p>';
             }
         }
 
-        function renderFilters() {
-            const genres = ['Barchasi', ...new Set(allMovies.map(m => m.genre).filter(Boolean))];
-            filtersDiv.innerHTML = '';
-            genres.forEach(g => {
-                const btn = document.createElement('button');
-                btn.innerText = g;
-                btn.className = `px-4 py-1 rounded-full text-sm font-semibold whitespace-nowrap ${currentGenre === g ? 'bg-red-600 text-white' : 'bg-gray-800 text-gray-300'}`;
-                btn.onclick = () => { currentGenre = g; renderFilters(); filterMovies(); };
-                filtersDiv.appendChild(btn);
+        function isFav(id) {
+            return favMovies.some(m => m.id === id);
+        }
+
+        async function toggleFav(e, id) {
+            e.stopPropagation();
+            if (!userId) return tg.showAlert("Sizning profilingiz aniqlanmadi.");
+            
+            const btn = e.currentTarget;
+            const currentlyFav = btn.classList.contains('active');
+            
+            // Optimistic update
+            btn.classList.toggle('active');
+            
+            if (currentlyFav) {
+                favMovies = favMovies.filter(m => m.id !== id);
+            } else {
+                const mov = allMovies.find(m => m.id === id);
+                if (mov) favMovies.push(mov);
+            }
+            
+            if (currentTab === 'fav') renderMovies();
+
+            // Send API request
+            fetch('/api/favorites/toggle', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    user_id: userId,
+                    movie_id: id,
+                    action: currentlyFav ? 'remove' : 'add'
+                })
             });
         }
 
-        function filterMovies() {
-            const q = searchInput.value.toLowerCase();
-            let filtered = allMovies.filter(m => (m.title || '').toLowerCase().includes(q));
-            if (currentGenre !== 'Barchasi') {
-                filtered = filtered.filter(m => m.genre === currentGenre);
+        function switchTab(tab) {
+            currentTab = tab;
+            document.getElementById('tab-home').classList.toggle('active', tab === 'home');
+            document.getElementById('tab-fav').classList.toggle('active', tab === 'fav');
+            
+            if (tab === 'fav') {
+                document.getElementById('genreFilters').classList.add('hidden');
+                document.getElementById('searchInput').value = '';
+            } else {
+                document.getElementById('genreFilters').classList.remove('hidden');
             }
-            renderMovies(filtered);
+            renderMovies();
         }
 
-        function renderMovies(movies) {
+        function renderMovies() {
+            const grid = document.getElementById('movieGrid');
+            const search = document.getElementById('searchInput').value.toLowerCase();
+            const noResults = document.getElementById('noResults');
+            
             grid.innerHTML = '';
-            if (movies.length === 0) {
-                grid.innerHTML = '<p class="col-span-2 text-center text-gray-400">Hech narsa topilmadi</p>';
+            
+            let list = currentTab === 'home' ? allMovies : favMovies;
+
+            let filtered = list.filter(m => {
+                const matchSearch = m.title.toLowerCase().includes(search);
+                const matchGenre = currentGenre === 'all' || (m.genre && m.genre.toLowerCase().includes(currentGenre));
+                return matchSearch && matchGenre;
+            });
+
+            if (filtered.length === 0) {
+                grid.classList.add('hidden');
+                noResults.classList.remove('hidden');
                 return;
             }
-            movies.forEach(m => {
+
+            grid.classList.remove('hidden');
+            noResults.classList.add('hidden');
+
+            filtered.forEach(m => {
+                const favClass = isFav(m.id) ? 'active' : '';
+                const posterHtml = m.poster_url 
+                    ? `<img src="${m.poster_url}" class="w-full h-48 object-cover" alt="poster">`
+                    : `<div class="poster-placeholder w-full h-48 flex items-center justify-center text-white/50 text-4xl"><i class="fas fa-film"></i></div>`;
+                
+                const ratingHtml = m.tmdb_rating
+                    ? `<div class="absolute bottom-2 right-2 bg-yellow-500 text-black text-xs font-bold px-1.5 py-0.5 rounded flex items-center gap-1"><i class="fas fa-star"></i>${m.tmdb_rating}</div>`
+                    : ``;
+
                 const card = document.createElement('div');
-                card.className = 'movie-card rounded-xl overflow-hidden shadow-lg flex flex-col cursor-pointer';
-                card.onclick = () => {
-                    // Send data to Bot
-                    const code = m.bot_code.replace(/[^0-9]/g, '');
-                    tg.sendData(code);
-                    tg.close();
-                };
+                card.className = 'movie-card rounded-xl overflow-hidden cursor-pointer shadow-lg border border-gray-800';
+                card.onclick = () => sendMovieToBot(m.bot_code);
                 
                 card.innerHTML = `
-                    <div class="poster-placeholder w-full h-40 flex items-center justify-center">
-                        <i class="fas fa-play-circle text-4xl text-white opacity-60"></i>
+                    <div class="relative">
+                        ${posterHtml}
+                        ${ratingHtml}
+                        <div class="fav-btn ${favClass}" onclick="toggleFav(event, ${m.id})">
+                            <i class="fas fa-heart text-white transition-colors"></i>
+                        </div>
                     </div>
                     <div class="p-3">
-                        <h3 class="font-bold text-sm truncate">${m.title}</h3>
-                        <div class="flex justify-between items-center mt-2 text-xs text-gray-400">
+                        <h3 class="font-bold text-sm line-clamp-1 mb-1">${m.title}</h3>
+                        <div class="flex justify-between items-center text-xs text-gray-400">
                             <span>${m.year || ''}</span>
-                            <span class="bg-gray-700 px-2 py-1 rounded truncate max-w-[50%]">${m.genre || 'Kino'}</span>
+                            <span class="truncate ml-2 text-right">${m.genre || ''}</span>
                         </div>
                     </div>
                 `;
@@ -121,8 +251,25 @@
             });
         }
 
-        searchInput.addEventListener('input', filterMovies);
-        fetchMovies();
+        function filterGenre(genre) {
+            currentGenre = genre;
+            document.querySelectorAll('#genreFilters button').forEach(b => {
+                b.classList.remove('bg-red-600', 'text-white');
+                b.classList.add('bg-gray-800', 'text-gray-300');
+            });
+            event.target.classList.remove('bg-gray-800', 'text-gray-300');
+            event.target.classList.add('bg-red-600', 'text-white');
+            renderMovies();
+        }
+
+        document.getElementById('searchInput').addEventListener('input', renderMovies);
+
+        function sendMovieToBot(code) {
+            tg.sendData(code);
+            tg.close();
+        }
+
+        init();
     </script>
 </body>
 </html>

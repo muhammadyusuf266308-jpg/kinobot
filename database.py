@@ -350,11 +350,7 @@ def search_movie(query: str) -> list[dict]:
     return []
 
 
-def add_movie(title: str, bot_code: str,
-              title_ru: str = None, title_en: str = None,
-              year: int = None, genre: str = None,
-              description: str = None,
-              channel_msg_id: int = None) -> int:
+def add_movie(title: str, bot_code: str, title_ru: str = None, title_en: str = None, year: int = None, genre: str = None, description: str = None, channel_msg_id: int = None, poster_url: str = None, tmdb_rating: str = None) -> int:
     client = get_client()
 
     data = {
@@ -366,6 +362,8 @@ def add_movie(title: str, bot_code: str,
         "description":    description,
         "bot_code":       bot_code,
         "channel_msg_id": channel_msg_id,
+        "poster_url": poster_url,
+        "tmdb_rating": tmdb_rating,
     }
 
     try:
@@ -390,7 +388,7 @@ def add_movies_bulk(movies: list[dict], chunk_size: int = 200) -> int:
     Qaytaradi: saqlangan kinolar soni.
     """
     fields = ("title", "title_ru", "title_en", "year", "genre",
-              "description", "bot_code", "channel_msg_id")
+              "description", "bot_code", "channel_msg_id", "poster_url", "tmdb_rating")
     unique: dict[str, dict] = {}
     for m in movies:
         if m.get("title") and m.get("bot_code"):
@@ -780,4 +778,31 @@ def get_all_users() -> list[int]:
             return list(user_ids)
     except Exception as e:
         logger.error(f"get_all_users xatosi: {e}")
+    return []
+def add_favorite(user_id: int, movie_id: int) -> bool:
+    try:
+        client = get_client()
+        client.table("favorites").insert({"user_id": user_id, "movie_id": movie_id}).execute()
+        return True
+    except Exception as e:
+        logger.error(f"add_favorite error: {e}")
+        return False
+
+def remove_favorite(user_id: int, movie_id: int) -> bool:
+    try:
+        client = get_client()
+        client.table("favorites").delete().eq("user_id", user_id).eq("movie_id", movie_id).execute()
+        return True
+    except Exception as e:
+        logger.error(f"remove_favorite error: {e}")
+        return False
+
+def get_user_favorites(user_id: int) -> list[dict]:
+    try:
+        client = get_client()
+        res = client.table("favorites").select("movie_id, movies(*)").eq("user_id", user_id).execute()
+        if res and res.data:
+            return [row["movies"] for row in res.data if row.get("movies")]
+    except Exception as e:
+        logger.error(f"get_user_favorites error: {e}")
     return []

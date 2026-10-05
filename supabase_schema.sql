@@ -49,3 +49,21 @@ CREATE TABLE IF NOT EXISTS bot_admins (
 );
 
 ALTER TABLE bot_admins DISABLE ROW LEVEL SECURITY;
+
+-- ============================================================
+-- YANGA QO'SHILGAN FUNKSIYALAR UCHUN (V2)
+-- ============================================================
+
+-- Kinolar jadvaliga rasm manzili ustunini qo'shish (agar yo'q bo'lsa)
+ALTER TABLE movies ADD COLUMN IF NOT EXISTS poster_url TEXT;
+ALTER TABLE movies ADD COLUMN IF NOT EXISTS tmdb_rating TEXT;
+
+-- Saqlangan kinolar (Watchlist) jadvali
+CREATE TABLE IF NOT EXISTS favorites (
+    id          BIGSERIAL PRIMARY KEY,
+    user_id     BIGINT NOT NULL,
+    movie_id    BIGINT NOT NULL REFERENCES movies(id) ON DELETE CASCADE,
+    added_at    TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(user_id, movie_id)
+);
+ALTER TABLE favorites DISABLE ROW LEVEL SECURITY;

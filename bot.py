@@ -24,6 +24,7 @@ from config import (
     BOT_TOKEN, ADMIN_ID, CHANNEL_ID, GROUP_ID,
     TRIGGER_WORDS
 )
+from tmdb_service import fetch_movie_details
 from database import (
     init_db, search_movie, add_movie, log_search,
     get_all_movies, delete_movie, movie_exists_by_code, get_stats,
@@ -1363,9 +1364,16 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     for parsed in movies_list:
         if not _should_save_parsed(parsed, is_edit):
             continue
-        add_movie(**{k: parsed[k] for k in
+        # TMDB dan qidiramiz
+        tmdb_data = await fetch_movie_details(parsed.get("title"), parsed.get("year"))
+        if tmdb_data:
+            parsed["poster_url"] = tmdb_data.get("poster_url")
+            parsed["tmdb_rating"] = tmdb_data.get("tmdb_rating")
+            
+        add_movie(**{k: parsed.get(k) for k in
                      ["title", "bot_code", "title_ru", "title_en",
-                      "year", "genre", "description", "channel_msg_id"]})
+                      "year", "genre", "description", "channel_msg_id", 
+                      "poster_url", "tmdb_rating"]})
         added_count += 1
         if not first_title:
             first_title = parsed["title"]
@@ -1682,7 +1690,9 @@ async def start_web_server():
                 "title": m.get("title", ""),
                 "year": m.get("year", ""),
                 "genre": m.get("genre", ""),
-                "bot_code": str(m.get("bot_code", ""))
+                "bot_code": str(m.get("bot_code", "")),
+                "poster_url": m.get("poster_url", ""),
+                "tmdb_rating": m.get("tmdb_rating", "")
             })
         return web.json_response(safe_movies)
 
@@ -1702,6 +1712,47 @@ async def start_web_server():
     app.router.add_get('/ai', serve_ai)
     app.router.add_get('/api/movies', api_movies)
     app.router.add_post('/api/ai', api_ai)
+    async def api_get_favorites(request):
+        try:
+            user_id = int(request.query.get('user_id', 0))
+            from database import get_user_favorites
+            favs = get_user_favorites(user_id)
+            
+            safe_favs = []
+            for m in favs:
+                safe_favs.append({
+                    "id": m.get("id"),
+                    "title": m.get("title", ""),
+                    "year": m.get("year", ""),
+                    "genre": m.get("genre", ""),
+                    "bot_code": str(m.get("bot_code", "")),
+                    "poster_url": m.get("poster_url", ""),
+                    "tmdb_rating": m.get("tmdb_rating", "")
+                })
+            return web.json_response(safe_favs)
+        except Exception:
+            return web.json_response([])
+
+    async def api_toggle_favorite(request):
+        try:
+            data = await request.json()
+            user_id = int(data.get('user_id', 0))
+            movie_id = int(data.get('movie_id', 0))
+            action = data.get('action') # 'add' or 'remove'
+            
+            from database import add_favorite, remove_favorite
+            if action == 'add':
+                success = add_favorite(user_id, movie_id)
+            else:
+                success = remove_favorite(user_id, movie_id)
+                
+            return web.json_response({"success": success})
+        except Exception:
+            return web.json_response({"success": False})
+
+    app.router.add_get('/api/favorites', api_get_favorites)
+    app.router.add_post('/api/favorites/toggle', api_toggle_favorite)
+
 
     runner = web.AppRunner(app)
     await runner.setup()
@@ -1819,7 +1870,8 @@ async def cmd_broadcast(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return
         message_to_send = text
 
-    from database import get_all_users
+    from tmdb_service import fetch_movie_details
+from database import get_all_users
     import asyncio
     
     users = get_all_users()
@@ -1856,7 +1908,8 @@ async def inline_query(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     from telegram import InlineQueryResultArticle, InputTextMessageContent
     import uuid
-    from database import search_movie
+    from tmdb_service import fetch_movie_details
+from database import search_movie
 
     db_results = search_movie(query)
     results = []
