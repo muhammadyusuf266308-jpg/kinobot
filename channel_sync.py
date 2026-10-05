@@ -66,30 +66,33 @@ def _channel_entity():
     return int(cid) if cid.lstrip("-").isdigit() else cid
 
 
-async def _iter_posts(client: TelegramClient, entity):
+async def _iter_posts(client, entity):
     """Kanal postlarini eskidan yangiga qarab beradi."""
     if TG_SESSION:
         async for m in client.iter_messages(entity, reverse=True):
             yield m
         return
 
-    # Bot rejimi: botlar tarixni o'qiy olmaydi, lekin ID bo'yicha post ola oladi.
+    # Bot rejimi: eng so'nggi xabarni olib, ID sini topamiz
+    try:
+        latest = await client.get_messages(entity, limit=1)
+        max_id = latest[0].id if latest else 0
+    except Exception as e:
+        logger.error(f"Eng so'nggi xabarni olishda xato: {e}")
+        max_id = 50000 # Fallback
+
     start = 1
-    empty_run = 0
-    while empty_run < _STOP_AFTER_EMPTY:
+    while start <= max_id:
         ids = list(range(start, start + _BATCH_IDS))
         try:
             msgs = await client.get_messages(entity, ids=ids)
-        except FloodWaitError as e:
-            logger.warning(f"FloodWait: {e.seconds}s kutilmoqda")
-            await asyncio.sleep(e.seconds + 1)
+        except Exception as e:
+            await asyncio.sleep(2)
             continue
-        found = False
+            
         for m in msgs:
             if m is not None and getattr(m, "id", None):
-                found = True
                 yield m
-        empty_run = 0 if found else empty_run + _BATCH_IDS
         start += _BATCH_IDS
         await asyncio.sleep(0.3)
 
