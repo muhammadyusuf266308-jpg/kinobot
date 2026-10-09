@@ -744,26 +744,32 @@ async def post_create_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         fid = p_data.get("media_file_id")
 
         try:
+            post_markup = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🎬 Kinoni botdan ko'rish", url=f"https://t.me/{BOT_USERNAME}?start={p_data['code']}")]
+            ])
             if m_type == "photo" and fid:
                 sent_msg = await ctx.bot.send_photo(
                     chat_id=CHANNEL_ID,
                     photo=fid,
                     caption=post_text,
-                    parse_mode=ParseMode.HTML
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=post_markup
                 )
             elif m_type == "video" and fid:
                 sent_msg = await ctx.bot.send_video(
                     chat_id=CHANNEL_ID,
                     video=fid,
                     caption=post_text,
-                    parse_mode=ParseMode.HTML
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=post_markup
                 )
             else:
                 sent_msg = await ctx.bot.send_message(
                     chat_id=CHANNEL_ID,
                     text=post_text,
                     parse_mode=ParseMode.HTML,
-                    disable_web_page_preview=True
+                    disable_web_page_preview=True,
+                    reply_markup=post_markup
                 )
 
             # Post kanalga chiqdi, endi bot bazasiga ham avtomatik qo'shamiz!
