@@ -1594,6 +1594,7 @@ async def cmd_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     top_text = ""
     for i, item in enumerate(top_q, 1):
         top_text += f"  {i}. <code>{item['query']}</code> — <b>{item['count']}x</b>\n"
+    fallback_text = top_text if top_text else "  — ma'lumot yo'q"
     await update.message.reply_html(
         f"📊 <b>Statistika</b>\n\n"
         f"🎬 Kinolar: <b>{s['total_movies']}</b>\n"
@@ -1601,7 +1602,7 @@ async def cmd_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"✅ Topildi: <b>{s['found_count']}</b>\n"
         f"❌ Topilmadi: <b>{s['not_found']}</b>\n"
         f"📈 Muvaffaqiyat: <b>{rate}</b>\n\n"
-        f"🔥 <b>Eng ko'p qidirilganlar:</b>\n{top_text or '  — ma\'lumot yo\'q'}"
+        f"🔥 <b>Eng ko'p qidirilganlar:</b>\n{fallback_text}"
     )
 
 
