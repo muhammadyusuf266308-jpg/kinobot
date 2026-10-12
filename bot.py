@@ -3,6 +3,7 @@
 #  Admin uchun qulay Kino qo'shish paneli bilan
 # ============================================================
 import logging
+import asyncio
 import os
 import re
 import time
@@ -1953,6 +1954,12 @@ async def inline_query(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Inline qidiruvda xato: {e}")
 
 def main():
+    try:
+        asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
     logger.info("🤖 Bot ishga tushmoqda...")
     init_db()
 
